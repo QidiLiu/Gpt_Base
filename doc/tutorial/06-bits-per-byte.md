@@ -234,6 +234,11 @@ def evaluate_bpb(model, loader, token_bytes, max_batches: int) -> float:
 
 新建 `scratch/bpb_demo.py`：
 
+> 🔒 **需要先完成**：卷 1 第 02-06 章（tokenizer + dataloader）+ 至少跑过一次 `train_base`
+>
+> 现在跑到这步会得到 `NotImplementedError: 待实现：xxx` ——
+> 那是「你还没写这一块」，不是环境坏了。想跳过：`git checkout solution`。
+
 ```python
 """
 bpb 的完整手工验证。第 06 章验证 1。
@@ -341,6 +346,11 @@ tokenizer 训练时报的 `bytes/token`（第 02 章的 3.24）和这里算出�
 ### 验证 2：亲手制造一次「loss 相同但 bpb 不同」
 
 新建 `scratch/bpb_uncomparable.py`：
+
+> 🔒 **需要先完成**：无（纯 math，可以现在就做）
+>
+> 现在跑到这步会得到 `NotImplementedError: 待实现：xxx` ——
+> 那是「你还没写这一块」，不是环境坏了。想跳过：`git checkout solution`。
 
 ```python
 """
@@ -526,4 +536,16 @@ CORE 的原理（`nanochat/core_eval.py`）值得预告：
 - ✅ 实现并可视化 BOS-aligned best-fit，理解它为什么丢 token 也划算
 - ✅ 用 bpb 而不是 loss 来衡量模型
 
-**下一卷**开始搭模型：[第 07 章：先跑通一个最小 GPT](07-先跑通一个最小GPT.md)。
+**下一卷**（卷 2 模型）开始搭模型，从 🚧 第 07 章「先跑通一个最小 GPT」开始
+—— 教程正文还没写，但**代码骨架和判据测试已经就位**：
+
+```bash
+# 看看卷 2 你要实现什么
+grep -n "raise NotImplementedError" src/model/layers.py src/model/gpt.py
+
+# 敲完之后
+uv run pytest tests/test_core.py -k "uniform or causal" -v
+```
+
+卷 2-4 的骨架一共 37 处待实现，配合 `src/` 里的 docstring
+（每处都写清了「要做哪几步」和「怎么验证」）足够跟敲。

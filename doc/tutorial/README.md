@@ -116,6 +116,10 @@ src/
 
 ## 教程目录
 
+> 🚧 = 教程正文还没写（代码骨架已就位，第二批交付）。
+> **判据测试和 `src/` 里的骨架提示已经可以用了**，所以你可以先敲代码，
+> 教程正文随后补上。
+
 ### 卷 0 · 准备　📖 只读
 | 章 | 标题 | 核心问题 |
 |---|---|---|
@@ -134,36 +138,36 @@ src/
 ### 卷 2 · 模型：tensor 怎么变成 logits　✍ 手抄
 | 章 | 标题 | 完成判据指向 |
 |---|---|---|
-| [07](07-先跑通一个最小GPT.md) | 先跑通一个最小 GPT | `-k uniform or causal` |
-| [08](08-RMSNorm.md) | RMSNorm | `-k uniform` |
-| [09](09-RoPE旋转位置编码.md) | **RoPE 旋转位置编码** | `-k rope` |
-| [10](10-注意力三步曲.md) | 注意力三步曲 | `-k attend or sliding` |
-| [11](11-为什么用SDPA和FlashAttention.md) | SDPA 与 FlashAttention | `-k sdpa` ★ 有个大坑 |
-| [12](12-QKNorm与GQA.md) | QK Norm 与 GQA | `-k attend` |
-| [13](13-MLP激活函数.md) | MLP 与激活函数 | `-k uniform` |
-| [14](14-残差流与Pre-LN.md) | 残差流与 Pre-LN | `-k causal` |
-| [15](15-权重绑定与logit-softcap.md) | 权重绑定与 logit softcap | `-k sampling or topk` |
+| 🚧 [07](07-先跑通一个最小GPT.md) | 先跑通一个最小 GPT | `-k uniform or causal` |
+| 🚧 [08](08-RMSNorm.md) | RMSNorm | `-k uniform` |
+| 🚧 [09](09-RoPE旋转位置编码.md) | **RoPE 旋转位置编码** | `-k rope` |
+| 🚧 [10](10-注意力三步曲.md) | 注意力三步曲 | `-k attend or sliding` |
+| 🚧 [11](11-为什么用SDPA和FlashAttention.md) | SDPA 与 FlashAttention | `-k sdpa` ★ 有个大坑 |
+| 🚧 [12](12-QKNorm与GQA.md) | QK Norm 与 GQA | `-k attend` |
+| 🚧 [13](13-MLP激活函数.md) | MLP 与激活函数 | `-k uniform` |
+| 🚧 [14](14-残差流与Pre-LN.md) | 残差流与 Pre-LN | `-k causal` |
+| 🚧 [15](15-权重绑定与logit-softcap.md) | 权重绑定与 logit softcap | `-k sampling or topk` |
 
 ### 卷 3 · nanochat 的架构 trick　✍ 手抄
 | 章 | 标题 | 完成判据指向 |
 |---|---|---|
-| [16](16-meta-device三步建模型.md) | **meta device 三步建模型** | `-k uniform` ★ 有个 NaN 坑 |
-| [17](17-逐层标量resid与x0.md) | resid_lambdas 与 x0_lambdas | `-k all_tricks` |
-| [18](18-Value-Embeddings与门控.md) | Value Embeddings 与门控 | `-k all_tricks` |
-| [19](19-Smear与Backout.md) | Smear 与 Backout | `-k all_tricks` |
-| [20](20-滑动窗口注意力.md) | 滑动窗口注意力 | `-k sliding` |
+| 🚧 [16](16-meta-device三步建模型.md) | **meta device 三步建模型** | `-k uniform` ★ 有个 NaN 坑 |
+| 🚧 [17](17-逐层标量resid与x0.md) | resid_lambdas 与 x0_lambdas | `-k all_tricks` |
+| 🚧 [18](18-Value-Embeddings与门控.md) | Value Embeddings 与门控 | `-k all_tricks` |
+| 🚧 [19](19-Smear与Backout.md) | Smear 与 Backout | `-k all_tricks` |
+| 🚧 [20](20-滑动窗口注意力.md) | 滑动窗口注意力 | `-k sliding` |
 
 ### 卷 4 · 优化器（最硬核的一卷）　✍ 手抄
 | 章 | 标题 | 完成判据指向 |
 |---|---|---|
-| [21](21-从SGD到AdamW.md) | 从 SGD 到 AdamW | `-k adamw` |
-| [22](22-为什么矩阵参数适合Muon.md) | 为什么矩阵参数适合 Muon | `-k adamw` |
-| [23](23-手写Newton-Schulz正交化.md) | **手写 Newton-Schulz 正交化** | `-k orthogonalize` ★ 20 行 |
-| [24](24-Polar-Express.md) | Polar Express | `-k polar` |
-| [25](25-三个进阶修正.md) | MuonEq / Muon+ / NorMuon | `-k muon_plus or nor_muon` |
-| [26](26-谨慎权重衰减.md) | 谨慎权重衰减 | `-k cautious` |
-| [27](27-混合优化器与参数分组.md) | 混合优化器与参数分组 | `-k grouping` |
-| [28](28-compile融合与0D-tensor技巧.md) | torch.compile 融合与 0-D tensor 技巧 | `-k hyperparams` |
+| 🚧 [21](21-从SGD到AdamW.md) | 从 SGD 到 AdamW | `-k adamw` |
+| 🚧 [22](22-为什么矩阵参数适合Muon.md) | 为什么矩阵参数适合 Muon | `-k adamw` |
+| 🚧 [23](23-手写Newton-Schulz正交化.md) | **手写 Newton-Schulz 正交化** | `-k orthogonalize` ★ 20 行 |
+| 🚧 [24](24-Polar-Express.md) | Polar Express | `-k polar` |
+| 🚧 [25](25-三个进阶修正.md) | MuonEq / Muon+ / NorMuon | `-k muon_plus or nor_muon` |
+| 🚧 [26](26-谨慎权重衰减.md) | 谨慎权重衰减 | `-k cautious` |
+| 🚧 [27](27-混合优化器与参数分组.md) | 混合优化器与参数分组 | `-k grouping` |
+| 🚧 [28](28-compile融合与0D-tensor技巧.md) | torch.compile 融合与 0-D tensor 技巧 | `-k hyperparams` |
 
 ### 卷 5-8 · 训练循环、分布式、对齐、收尾　📖 只读
 *（第二批交付：代码已在 `src/` 里，是只读的。教程随第二批补上）*
@@ -199,6 +203,42 @@ src/
 
 ---
 
+## scratch 脚本什么时候能跑
+
+`scratch/` 里的实验脚本有些依赖你还没实现的部分。**先看这张表再跑**，
+免得看到 `NotImplementedError` 以为环境坏了。
+
+| 脚本 | 依赖 | 状态 | 解锁条件 |
+|---|---|---|---|
+| `scratch/hardware.py` | `common` | ✅ **现在就能跑** | 卷 0 |
+| `scratch/toy_bpe.py` | 纯 Python | ✅ **现在就能跑** | 卷 0（它是卷 2 的材料） |
+| `scratch/vocab_math.py` | `common.config` | ✅ **现在就能跑** | 卷 0 |
+| `scratch/bpb_uncomparable.py` | 纯 math | ✅ **现在就能跑** | 卷 0（它是卷 1 的材料） |
+| `scratch/mini_bpe.py` | `data.dataset` | 🔒 | 写完 `list_parquet_files` 一行 |
+| `scratch/mask_demo.py` | `tokenizer.render_conversation` | 🔒 | 卷1 第 04 章 |
+| `scratch/check_data.py` | `tokenizer` + `dataloader` | 🔒 | 卷1 第 05 章 |
+| `scratch/naive_dataloader.py` | 同上 | 🔒 | 卷1 第 05 章 |
+| `scratch/packing_demo.py` | 同上 | 🔒 | 卷1 第 05 章 |
+| `scratch/bpb_demo.py` | checkpoint + `dataloader` | 🔒 | 卷1 第 06 章 |
+| `bash script/train_base.sh` | 上面全部 + 模型 + 优化器 | 🔒 | 卷 1-4 全部完成 |
+| `bash script/eval_base.sh` | checkpoint | 🔒 | 至少跑过一次 `train_base` |
+| `bash script/train_sft.sh` | `data.tasks`（只读）+ 预训练 ckpt | 🔒 | 卷1 + 卷2-4 |
+| `bash script/eval_sft.sh` | 同上 | 🔒 | 跑过一次 `train_sft` |
+| `bash script/chat.sh` | 有 checkpoint 就能跑 | 🔒 | 跑过一次 `train_base`（无 SFT 时用基座） |
+| `bash script/progress.sh` | 无 | ✅ **现在就能跑** | 随时 |
+
+> 🔒 意味着跑到那一步会报 `NotImplementedError: 待实现：xxx`。
+> **那不是 bug，是你还没写那一块。**
+
+想跳过等待看效果：
+
+```bash
+git checkout solution          # 完整实现，scratch 和脚本全部可跑
+git checkout main              # 看完切回来
+```
+
+---
+
 ## 五个入口脚本　📖 只读，直接用
 
 ```bash
@@ -224,7 +264,8 @@ bash script/chat.sh       smoke   # 交互式聊天
 uv run pytest tests/ -v
 ```
 
-29 个测试专门覆盖「看起来对其实错了」的 bug。你在敲的过程中改坏东西，
+51 个测试（卷0 6 个 + 卷1 15 个 + 卷2-3 18 个 + 卷4 12 个）
+专门覆盖「看起来对其实错了」的 bug。你在敲的过程中改坏东西，
 测试会立刻告诉你哪里坏了。几个重点：
 
 | 测试 | 锁住的坑 |

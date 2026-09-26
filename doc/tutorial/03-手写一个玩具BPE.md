@@ -214,6 +214,11 @@ class MiniBPE:
 
 `scratch/mini_bpe.py` 已经写好了。跑：
 
+> 🔒 **需要先完成**：无 —— 玩具 BPE 是纯 Python 玩具，只用到 `download_tiny_shakespeare`（卷 0）
+>
+> 现在跑到这步会得到 `NotImplementedError: 待实现：xxx` ——
+> 那是「你还没写这一块」，不是环境坏了。想跳过：`git checkout solution`。
+
 ```bash
 uv run python scratch/mini_bpe.py
 ```

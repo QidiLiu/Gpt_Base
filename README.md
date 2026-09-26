@@ -59,7 +59,7 @@ src/
 script/           6 个入口脚本（train_base / eval_base / train_sft / eval_sft / chat / progress）
 doc/tutorial/     教程（8 章已写，卷 2-8 待补）
 scratch/          7 个可运行的实验脚本
-tests/            29 个测试，每章的完成判据
+tests/            51 个测试，每章的完成判据
 ```
 
 ## 看答案

@@ -254,6 +254,11 @@ def render_conversation(self, conversation: dict, max_tokens: int = 2048,
 
 新建 `scratch/mask_demo.py`：
 
+> 🔒 **需要先完成**：卷 1 第 04 章（`render_conversation`）
+>
+> 现在跑到这步会得到 `NotImplementedError: 待实现：xxx` ——
+> 那是「你还没写这一块」，不是环境坏了。想跳过：`git checkout solution`。
+
 ```python
 from data.tokenizer import get_tokenizer
 
@@ -320,6 +325,11 @@ print("[OK] 监督信号 = assistant 的回答 + <|assistant_end|>（教模型�
 
 追加到 `scratch/mask_demo.py`：
 
+> 🔒 **需要先完成**：卷 1 第 04 章
+>
+> 现在跑到这步会得到 `NotImplementedError: 待实现：xxx` ——
+> 那是「你还没写这一块」，不是环境坏了。想跳过：`git checkout solution`。
+
 ```python
 # ── 带工具调用的对话 ──
 print("\n" + "=" * 60)
@@ -354,6 +364,11 @@ print("[OK] 工具调用表达式和自然语言要学，工具返回值不学")
 ### 验证 3：亲眼看到「截断把监督信号全切掉」
 
 追加到 `scratch/mask_demo.py`：
+
+> 🔒 **需要先完成**：卷 1 第 04 章
+>
+> 现在跑到这步会得到 `NotImplementedError: 待实现：xxx` ——
+> 那是「你还没写这一块」，不是环境坏了。想跳过：`git checkout solution`。
 
 ```python
 # ── 验证 3：亲眼看到「截断把监督信号全切掉」──

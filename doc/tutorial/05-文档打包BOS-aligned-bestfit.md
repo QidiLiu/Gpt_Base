@@ -325,6 +325,11 @@ def make_dataloader(tokenizer, batch_size, seq_len, split, device="cuda",
 
 `scratch/packing_demo.py` 已经写好了。跑：
 
+> 🔒 **需要先完成**：卷 1 第 02-05 章（tokenizer + `list_parquet_files` + best-fit 装箱）
+>
+> 现在跑到这步会得到 `NotImplementedError: 待实现：xxx` ——
+> 那是「你还没写这一块」，不是环境坏了。想跳过：`git checkout solution`。
+
 ```bash
 uv run python scratch/packing_demo.py
 ```
@@ -405,6 +410,11 @@ uv run python scratch/packing_demo.py
 
 `scratch/check_data.py`（第 01 章写的）：
 
+> 🔒 **需要先完成**：卷 1 第 05 章（best-fit 装箱）
+>
+> 现在跑到这步会得到 `NotImplementedError: 待实现：xxx` ——
+> 那是「你还没写这一块」，不是环境坏了。想跳过：`git checkout solution`。
+
 ```bash
 uv run python scratch/check_data.py
 ```
@@ -455,59 +465,38 @@ print('第 0 行前 3 个是不是都是 BOS ?', (x[0,:3] == bos).tolist())
 
 **naive 拼接怎么实现**（最值得做的那个）：
 
-新建 `scratch/naive_dataloader.py`：
+`scratch/naive_dataloader.py` 已经写好了。核心只有 20 行：
 
 ```python
-"""
-对照实现：nanoGPT 式的 naive 拼接。
-把所有 token 串成一条长流，随机切 T 长的窗口。
-"""
-import torch
-import pyarrow.parquet as pq
-from data.tokenizer import get_tokenizer
-from data.dataset import list_parquet_files
-from common import get_dist_info
-
-
-def naive_dataloader(tokenizer, batch_size, seq_len, split="train",
-                     device="cpu", pool_tokens=20_000_000):
+def naive_dataloader(tokenizer, batch_size, seq_len, pool, device="cpu", seed=0):
     """
-    和 make_dataloader 产出同样形状的 (x, y)，但用 naive 拼接。
-    差异：窗口会跨越文档边界（cross-contamination）。
+    产出 (x, y)，形状与 make_dataloader 相同，但窗口会跨文档。
+    和 best-fit 的唯一区别：没有「每行以 BOS 开头」这个不变量。
     """
-    import random
-    # 1) 收集一大批 token（真实实现会流式做，这里为简单起见先收集）
-    pool = []
-    for path in list_parquet_files(split):
-        pf = pq.ParquetFile(path)
-        for rg_idx in range(min(pf.num_row_groups, 6)):
-            rg = pf.read_row_group(rg_idx)
-            for text in rg.column("text").to_pylist():
-                pool.extend(tokenizer.encode(text, prepend=tokenizer.get_bos_token_id()))
-                if len(pool) >= pool_tokens:
-                    return _slice(pool, batch_size, seq_len, device, random)
-    return _slice(pool, batch_size, seq_len, device, random)
-
-
-def _slice(pool, batch_size, seq_len, device, random):
+    rng = random.Random(seed)
     while True:
-        ix = [random.randrange(0, len(pool) - seq_len - 1) for _ in range(batch_size)]
-        x = torch.stack([torch.tensor(pool[i:i + seq_len]) for i in ix])
-        y = torch.stack([torch.tensor(pool[i + 1:i + 1 + seq_len]) for i in ix])
+        ix = [rng.randrange(0, len(pool) - seq_len - 1) for _ in range(batch_size)]
+        x = torch.stack([torch.tensor(pool[i:i + seq_len], dtype=torch.long) for i in ix])
+        y = torch.stack([torch.tensor(pool[i + 1:i + 1 + seq_len], dtype=torch.long)
+                         for i in ix])
         yield x.to(device), y.to(device)
 
 
-if __name__ == "__main__":
-    tok = get_tokenizer()
-    dl = naive_dataloader(tok, batch_size=4, seq_len=512)
-    x, y = next(dl)
-    bos = tok.get_bos_token_id()
-    n_bos = int((x == bos).sum())
-    print(f"naive 拼接: {tuple(x.shape)}")
-    print(f"每行 BOS 数: {(x == bos).sum(dim=1).tolist()}")
-    print(f"第 0 行前 24 token: ")
-    print(" ", tok.visualize(x[0][:24].tolist(), with_token_id=True))
+def contamination_rate(x, bos):
+    """
+    每行「第一个 BOS 之前」的 token 数。
+      返回 0  -> 该行从 BOS 开始（干净）
+      返回 >0 -> 该行从某篇文档中间切进来（污染）
+      返回 -1 -> 该行一个 BOS 都没有（整行都在一篇文档内部，也算污染）
+    """
+    out = []
+    for row in x:
+        idx = (row == bos).nonzero()
+        out.append(int(idx[0]) if len(idx) else -1)
+    return out
 ```
+
+🔒 需要：卷 1 第 02-05 章
 
 跑：
 
@@ -515,30 +504,78 @@ if __name__ == "__main__":
 uv run python scratch/naive_dataloader.py
 ```
 
-**观察**：`每行 BOS 数` 应该远大于 1（best-fit 是 1.1 左右），
-因为 naive 拼接会在一行里塞进好几篇文档的**部分内容**。
-但 BOS 只在每篇文档的开头出现，所以一行里 BOS 少不代表污染少 ——
-**真正的问题是「跨边界」**：
+**实测输出**（B=8, T=512, 16 个 batch = 128 行）：
 
-一行 512 token，文档中位数 740 token，所以一行里通常有 1 个 BOS
-和 1 次「从某篇文档中间切进来」。这个「切进来」的起点
-模型是没有任何信号能识别的。
+```
+=== 构建 token 长流（naive 拼接的前提）===
+  池子 4,001,171 token  （488 倍词表大小）
 
-**怎么量化这个效应？** 一个可行的代理指标：
-统计每个窗口的**第一个 token 到第一个 BOS 之间的距离**。
-- best-fit：距离恒为 0（窗口一定从 BOS 开始）
-- naive：距离 > 0 表示窗口从文档中间开始，这个 token 的
-  上下文是「残缺的」
+=== naive 拼接 vs best-fit 的污染率 ===
+策略                污染行占比        首BOS前token数(前12行)
+----------------------------------------------------
+naive            100.0% [-1, 259, -1, 354, 5, -1, 35, 253, -1, 448, -1, -1]
+best-fit           0.0% [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
-```python
-def contamination_rate(x, bos):
-    """每行第一个 BOS 之前有多少个 token（>0 说明窗口从文档中间开始）。"""
-    return [int((row[:int((row == bos).nonzero()[0])] != bos).sum()) if (row == bos).any() else -1
-            for row in x]
+→ best-fit 恒为 0%（每行一定从 BOS 开始）
+→ naive 的大多数行 > 0，意味���模型要从「没有开头的句子」开始预测
+
+=== 一行 naive 窗口的开头长什么样（注意第一个 BOS 的位置）===
+  首个 BOS 位于位置 -1
+   findings| of| H|ep|at|ocy|st| is| in| b|ats| (|S|ch|amer| et| al|.|,| Ref|erence
+   Sch|,| Per|kins|,| E|ji|rot|re|,| V|mod|zu|ak|,| Mat|ius
 ```
 
-把这个指标加到 `eval_base.sh` 里，分别跑 best-fit 和 naive 训练，
-比较 val_bpb。**这是本教程最值得做的一个消融实验。**
+**这个结果比我预想的更极端：naive 是 100% 污染，best-fit 是 0%。**
+
+看最后那个窗口 —— 它从一个残缺的句子开头：
+
+```
+ findings of Hepatitis is in bats (Schamer et al., Reference Sch, Perkins, Ejirotre, ...
+```
+
+**「findings」之前有什么？** 模型完全无从得知。
+它在学习「预测一个残缺语境的下一个 token」—— 这在真实推理时永远不会发生。
+
+`首BOS前token数` 里的 `-1` 表示**整行都没有 BOS**，
+也就是这 512 个 token 全部落在某一篇长文档的内部。
+
+### 然后做真正的消融
+
+污染率是代理指标，真正的结论要看 bpb。要做这个对照，
+需要让训练脚本能用 naive dataloader。最简单的办法：
+
+```bash
+# 1) 基线（best-fit）
+uv run python -m training.train_base --mode full --no-resume --model-tag d6_base
+
+# 2) 临时把 src/data/dataloader.py 的函数体换成 naive 版
+cp src/data/dataloader.py scratch/dataloader_bestfit.py.bak
+#   把 make_dataloader 换成：
+#     def make_dataloader(tokenizer, batch_size, seq_len, split, device="cuda", **kw):
+#         pool = build_token_pool(tokenizer, split, pool_tokens=8_000_000)
+#         for x, y in naive_dataloader(tokenizer, batch_size, seq_len, pool, device):
+#             yield x, y, {"pq_idx": 0, "rg_idx": 0, "epoch": 0}
+uv run python -m training.train_base --mode full --no-resume --model-tag d6_naive
+
+# 3) 恢复
+cp scratch/dataloader_bestfit.py.bak src/data/dataloader.py
+
+# 4) 对比
+bash scratch/ablation.sh d6_base
+```
+
+**预期**：`d6_naive` 的 bpb 明显更差。具体差多少取决于文档长度分布 ——
+我们的文档中位数 628 token 而 `full` 档 seq_len=1024，
+所以约 40% 的 token 落在文档内部。
+如果换成 nanochat 那种更长的文档，差距会更大。
+
+> **一个诚实的补充**：这个消融**在真实训练里还混进了别的变量**。
+> naive 版把 800 万 token 一次性读进内存（best-fit 是流式的），
+> 而且每次 `next()` 都要随机采样而不是顺序推进。
+> 所以 bpb 的差异里有一部分来自「数据顺序」而不是「跨文档污染」。
+> 要严格隔离，需要让 naive 版也按顺序推进 ——
+> 但那样窗口会高度重叠，又是另一个问题。
+> **这就是消融实验的固有困难：很难只改一个变量。**
 
 ---
 

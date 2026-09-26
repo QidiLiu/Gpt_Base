@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# uv / venv
+.venv/
+uv.lock
+
+# 运行产物
+runs/
+out/
+ckpt/
+*.pt
+*.png
+!doc/**/*.png
+
+# 数据与缓存
+data_cache/
+*.parquet
+*.bin
+*.json.tmp
+
+# 编辑器
+.vscode/
+.idea/
+.DS_Store
+
+# 本地实验
+scratch/__pycache__/
+.pytest_cache/

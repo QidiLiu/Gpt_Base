@@ -1,0 +1,43 @@
+[project]
+name = "gpt-base"
+version = "0.1.0"
+description = "从零手抄一个 GPT：nanochat 的架构与训练机制 + nanoGPT 的可读性"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "torch>=2.14.0",
+    "numpy>=2.0.0",
+    "pyarrow>=20.0.0",
+    "rustbpe>=0.1.0",
+    "tiktoken>=0.11.0",
+    "requests>=2.32.0",
+    "jinja2>=3.1.0",
+    "matplotlib>=3.9.0",
+    "tqdm>=4.66.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
+
+# torch 走 cu132 索引（与 ~/Dev/Contour_Painter 保持一致）
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu132" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
+explicit = true
+
+[build-system]
+requires = ["uv_build>=0.12.18,<0.13.0"]
+build-backend = "uv_build"
+
+# 允许多个顶层包：src/ 下按功能分包（common / data / model / optim / ...）
+[tool.uv.build-backend]
+namespace = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

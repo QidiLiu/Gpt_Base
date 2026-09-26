@@ -154,6 +154,10 @@ BPE 分词时：  "- Paris=F"  ->  ["- Paris", "=F"]
 
 ### 第 1 块：一个能处理工具调用的消息渲染器
 
+
+<details>
+<summary><b>👀 展开参考答案（先自己想 20 分钟）</b></summary>
+
 ```python
 def render_conversation(self, conversation: dict, max_tokens: int = 2048,
                         truncate: str = "right"):
@@ -226,6 +230,8 @@ def render_conversation(self, conversation: dict, max_tokens: int = 2048,
         return ids[:max_tokens], mask[:max_tokens]
     return ids[-max_tokens:], mask[-max_tokens:]     # left: 保留结尾
 ```
+
+</details>
 
 **注意三处 mask 的取值**：
 

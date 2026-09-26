@@ -1,26 +1,36 @@
 """
 Dataloader：把一堆变长文档打包成定长的 (B, T) 训练 batch。
 
-这是本项目最值得逐行读懂的一段代码。教程卷1 的核心章节会完整拆解。
+**卷 1 最有价值的一段代码。** 建议在 tutorial/卷1 第 05 章的
+「概念」部分读完再动手。
 
-核心问题：文档长度不一（实测 ClimbMix 中位数 2400 字符，max 11 万），
-但 GPU 只吃矩形 tensor。怎么不浪费地拼成矩形？
+▓▓ 这一章要你敲的部分 ▓▓
+    iter_documents  —— 读 parquet
+    make_dataloader —— ★ best-fit 装箱算法（本文件核心）
 
-naive 做法（nanoGPT 的做法）：
-    把所有 token 首尾相连切成一条长流，再随机切 T 长度的窗口。
-    问题：窗口会横跨文档边界，模型学到「从上一篇文章的中间接着写」。
-          论文里叫 "cross-contamination"。
+────────────────────────────────────────────────────────────────
+背景：为什么要装箱
+────────────────────────────────────────────────────────────────
+ClimbMix 文档长度实测（scratch/packing_demo.py）：
+    min=4  p25=279  中位数=628  p75=829  max=25055
+而 GPU 只吃矩形 tensor：`(B, T)`，T 必须固定。
 
-本模块的做法（nanochat 的 BOS-aligned best-fit）：
-    1) 每行开头放一个 <|bos|>
-    2) 依次把文档塞进这一行，**优先选「能完整放下的最长文档」**（best-fit）
-    3) 都放不下时，裁剪**最短的**文档填满剩余空间
-    结果：利用率 100%（无 padding），但约 35% token 在裁剪时被丢掉。
+四种做法，代价递增：
+  0) padding 到最长    -> 99% 算力在算 PAD，且模型学到推理时不存在的模式
+  1) 截断到固定长度    -> 长文档 97% 被丢
+  2) naive 拼接        -> 窗口跨文档边界，模型学「从上一篇文章中间接着写」
+  3) BOS-aligned best-fit -> 本文件采用
 
-为什么愿意丢 35% 的 token 换「文档边界干净」？
-    因为那 35% 如果留着，模型会花容量去学「跨文档续写」这种
-    在真实推理时永远不会遇到的模式。丢掉的 token 换成更干净的训练信号，
-    净收益为正。nanochat 的 leaderboard 实验支持这个取舍。
+best-fit 的四条规则：
+  (1) 每行开头是 <|bos|>
+  (2) 每篇文档前面也有 <|bos|>（靠 tokenizer 编码时 prepend 实现）
+  (3) 装箱时**优先选「能完整放下的最长文档」**
+  (4) 都放不下时，**裁剪最短的**填满
+
+代价与收益（务必读完 tutorial 第 05 章的「为什么丢 35% 划算」）：
+  · 利用率 100%（无 padding），但约 35% token 在裁剪时被丢弃
+  · 换来的：0% 跨文档污染 + 显式的文档边界信号
+  · 65% 的干净数据 > 90% 的脏数据
 """
 
 import torch
@@ -29,149 +39,142 @@ from data.dataset import list_parquet_files
 from common import get_dist_info
 
 
-# ---------------------------------------------------------------------------
-# 阶段一：产出「文档文本批次」
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# ❗ 要你敲的部分 1：读 parquet
+# ===========================================================================
 def iter_documents(split: str, tokenizer_batch_size: int = 128,
                    resume_state: dict | None = None):
     """
-    无限循环地产出 (text_batch, state)，text_batch 是一批原始字符串。
+    无限循环地产出 (text_batch, state)。
 
-    state = {"pq_idx": 第几个 parquet 文件, "rg_idx": 第几个 row group, "epoch": 第几轮}
-    保存它就实现了「任意位置精确续训」。
+        text_batch  一批原始字符串
+        state       {"pq_idx": 第几个 parquet 文件,
+                     "rg_idx":  第几个 row group,
+                     "epoch":   第几轮}
 
-    为什么按 row group 读、而不是一次读完整个 shard？
-      一个 shard 有 86,016 篇文档约 2.5 亿字符，一次读进来内存爆掉。
-      parquet 的 row group 是天然的分块单位（每个约 3 MB / 1024 篇），
-      按需读取让内存占用与数据量无关。
+    保存 state 就实现了「任意位置精确续训」。
+
+    ── 你要想清楚的点 ──────────────────────────────
+    (1) 为什么必须用生成器？
+        1 个 shard 有 8.6 万篇文档约 2.5 亿字符，一次读进内存会爆。
+        惰性读取让内存占用只等于「一个 row group」，与数据量无关。
+
+    (2) 为什么按 row group 读，而不是按文件读？
+        实测 1 个 shard = 84 个 row group，每个 1024 篇文档、约 3 MB。
+        parquet 的 row group 是天然的独立分块单位。
+
+    (3) 外层为什么是 `while True`？
+        因为训练是多 epoch 的，数据要循环用。
+
+    (4) 续训时怎么避免重复训练？
+        提示：从 resume_state 的 rg_idx 出发，并且**往前跳 1 个**。
+        多卡时还要考虑每个 rank 只读不同的 row group（本项目 world_size 恒为 1，
+        但代码形态要留着 —— 教程卷 6 会讲）。
+
+    (5) train 和 val 的 shard 怎么区分？
+        提示：看 data/dataset.py 的 list_parquet_files，它已经处理了。
     """
-    import pyarrow.parquet as pq
-
-    _, rank, _, world_size = get_dist_info()
-    paths = list_parquet_files(split)
-    assert paths, "没找到 parquet，先跑 script/train_base.sh"
-
-    pq_idx = resume_state["pq_idx"] if resume_state else 0
-    rg_start = resume_state["rg_idx"] if resume_state else None
-    epoch = resume_state.get("epoch", 1) if resume_state else 1
-    first_pass = True
-
-    while True:  # 无限循环：训练是多 epoch 的
-        pq_idx = resume_state["pq_idx"] if (first_pass and resume_state) else 0
-        while pq_idx < len(paths):
-            pf = pq.ParquetFile(paths[pq_idx])
-            if first_pass and rg_start is not None and pq_idx == resume_state["pq_idx"]:
-                # 续训：从上次位置 +1 个 row group 接着读，避免重复训练
-                rg_idx = (rg_start // world_size + 1) * world_size + rank
-                rg_start = None  # 只在第一次 pass 用
-            else:
-                rg_idx = rank  # 多卡时每张卡读不同的 row group
-            while rg_idx < pf.num_row_groups:
-                rg = pf.read_row_group(rg_idx)
-                batch = rg.column("text").to_pylist()
-                for i in range(0, len(batch), tokenizer_batch_size):
-                    yield batch[i:i + tokenizer_batch_size], {"pq_idx": pq_idx, "rg_idx": rg_idx, "epoch": epoch}
-                rg_idx += world_size
-            pq_idx += 1
-        first_pass = False
-        epoch += 1
+    raise NotImplementedError(
+        "待实现：iter_documents ——\n"
+        "  1) import pyarrow.parquet as pq；paths = list_parquet_files(split)\n"
+        "  2) 从 resume_state 读出 pq_idx / rg_idx / epoch\n"
+        "  3) while True 外层循环，遍历 paths\n"
+        "  4) 每行：pf = pq.ParquetFile(path)\n"
+        "  5) 内层 while 遍历 row group：rg = pf.read_row_group(i)\n"
+        "     batch = rg.column('text').to_pylist()\n"
+        "     按 tokenizer_batch_size 切片 yield (切片, state)\n"
+        "  6) 每轮结束时 epoch += 1\n"
+        "参考实现：git show solution:src/data/dataloader.py")
 
 
-# ---------------------------------------------------------------------------
-# 阶段二：打包成定长 batch
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# ❗ 要你敲的部分 2：best-fit 装箱
+# ===========================================================================
 def make_dataloader(tokenizer, batch_size: int, seq_len: int, split: str,
                     device="cuda", resume_state: dict | None = None,
                     buffer_size: int = 1000, tokenizer_threads: int = 4,
                     tokenizer_batch_size: int = 128):
     """
     产出 (inputs, targets, state)：
-        inputs, targets 形状都是 (batch_size, seq_len)，dtype int64，在 device 上
-        state               打包位置，用于续训
+        inputs, targets  形状 (batch_size, seq_len)，dtype int64，在 device 上
+        state             打包位置，用于精确续训
 
-    ── 三个关键设计 ─────────────────────────────────────────────
+    ── 三个关键设计（务必想清楚，每一个都有代价）──────────────
 
-    (1) 为什么是 seq_len + 1？
-        要构造 inputs/targets 这一对，必须有 T+1 个 token：
+    (1) 为什么每行容量是 seq_len + 1 而不是 seq_len？
+        因为要同时构造 inputs 和 targets 这一对：
             inputs  = row[0 : T]
             targets = row[1 : T+1]
-        所以每行的容量是 T+1，其中 row[0] 固定是 <|bos|>。
+        所以每行需要 T+1 个 token。
 
     (2) 为什么全程不 padding？
         padding token 会让模型在推理时遇到从未见过的 id 分布。
-        宁可裁掉 35% 的 token，也要保证 100% 利用率 + 无 padding。
+        宁可裁掉 token，也要 100% 利用率 + 无 padding。
 
-    (3) 为什么用「先建 CPU row_buffer，再一次性搬到 GPU」？
-        逐行 torch.tensor(...) 会产生几千次小 H2D 拷贝，每次都有
-        几微秒的启动开销，累加起来能吃掉可观的时间。
-        正确做法是：CPU 侧拼好一整批 -> 一次 non_blocking H2D。
+    (3) 为什么先在 CPU 拼好再一次性搬 GPU？
+        逐行 torch.tensor(...) 会产生几千次小 H2D 拷贝，
+        每次几微秒的启动开销累加起来很可观。
+        正确做法：预分配 pinned CPU buffer -> 一次 non_blocking 拷贝。
+        而且 gpu_buffer 反复复用，生成过程中零显存分配。
+
+    ── 装箱算法本身（★ 本章核心）──────────────────────
+    对每一行，反复：
+        A) 找出「能完整放进剩余空间的、最长的」那篇文档
+        B) 如果找到了 -> 放进去
+        C) 如果一篇都放不下 -> 裁剪**最短的**那篇填满剩余空间，行结束
+
+    为什么 A 要「最长的」？
+        长文档能放下的位置越来越少，先安排它们，剩下的空间才能被小文档高效利用。
+        （tutorial 第 05 章的实验 C 手工构造：best-fit 裁 5 个 token，
+          first-fit 裁 10 个，裁最长的裁 45 个。）
+
+    为什么 C 要「最短的」？
+        裁最短的，浪费最少。
+        （反例：裁最长的会浪费 668% —— 同样见第 05 章实验 B。）
+
+    ── 三个必须避开的坑 ──────────────────────────────
+
+    坑 1：手动写 row[0] = bos
+        文档在 tokenizer 编码时已经 prepend=bos 了，第一篇被放进来的文档
+        自带 BOS，位置 0 自然就是 BOS。手动再写一次会得到两个 BOS。
+        正确做法：pos 从 0 开始，不手动写。
+        验证：x[0, :3] 应该是 [True, False, False]。
+
+    坑 2：忘了 break
+        规则 C 执行后行已满。while 循环必须 break，
+        否则下一轮 remaining=0，`doc[:0]` 是空，行永远不满。
+
+    坑 3：CPU buffer 形状算错
+        cpu_buffer 要装下 2 × batch_size × seq_len（inputs + targets），
+        然后用 .view() 切成两半。
     """
-    row_capacity = seq_len + 1
-    batches = iter_documents(split, tokenizer_batch_size, resume_state)
-    bos = tokenizer.get_bos_token_id()
-
-    # doc_buffer 存「已经 token 化、还没用掉」的文档
-    doc_buffer: list[list[int]] = []
-    pq_idx = rg_idx = 0
-    epoch = 1
-
-    def refill():
-        """从 parquet 再取一批文本，token 化后塞进 doc_buffer。"""
-        nonlocal pq_idx, rg_idx, epoch
-        text_batch, st = next(batches)
-        pq_idx, rg_idx, epoch = st["pq_idx"], st["rg_idx"], st["epoch"]
-        for tokens in tokenizer.encode(text_batch, prepend=bos, num_threads=tokenizer_threads):
-            doc_buffer.append(tokens)
-
-    use_cuda = (device == "cuda")
-    # CPU 侧的暂存区：一次性装下整批，pin_memory 让 H2D 走 DMA
-    cpu_buffer = torch.empty(2 * batch_size * seq_len, dtype=torch.long, pin_memory=use_cuda)
-    gpu_buffer = torch.empty(2 * batch_size * seq_len, dtype=torch.long, device=device)
-    cpu_inputs = cpu_buffer[:batch_size * seq_len].view(batch_size, seq_len)
-    cpu_targets = cpu_buffer[batch_size * seq_len:].view(batch_size, seq_len)
-    inputs = gpu_buffer[:batch_size * seq_len].view(batch_size, seq_len)
-    targets = gpu_buffer[batch_size * seq_len:].view(batch_size, seq_len)
-
-    # 拼行时用的工作区，大小是一整行
-    row = torch.empty(row_capacity, dtype=torch.long)
-
-    while True:
-        for r in range(batch_size):
-            # 从 0 开始。第一个被放进来的文档自带 <|bos|>（refill 里 prepend 的），
-            # 所以位置 0 自然就是 BOS，不需要额外手动写。
-            # 之后每篇文档的 BOS 就成了「文档分隔符」—— 模型学会看到 BOS 就
-            # 知道「新文章开始了」，这正是我们要的。
-            pos = 0
-
-            while pos < row_capacity:
-                # 保证 buffer 里有足够的候选文档
-                while len(doc_buffer) < buffer_size:
-                    refill()
-
-                remaining = row_capacity - pos
-
-                # 步骤 2：best-fit —— 找「能完整放下」的最长文档
-                best_idx, best_len = -1, 0
-                for i, doc in enumerate(doc_buffer):
-                    n = len(doc)
-                    if n <= remaining and n > best_len:
-                        best_idx, best_len = i, n
-                if best_idx >= 0:
-                    doc = doc_buffer.pop(best_idx)
-                    row[pos:pos + best_len] = torch.tensor(doc, dtype=torch.long)
-                    pos += best_len
-
-                # 步骤 3：没有文档能完整放下 -> 裁剪「最短的」那个填满
-                else:
-                    shortest_idx = min(range(len(doc_buffer)), key=lambda i: len(doc_buffer[i]))
-                    doc = doc_buffer.pop(shortest_idx)
-                    row[pos:pos + remaining] = torch.tensor(doc[:remaining], dtype=torch.long)
-                    pos = row_capacity
-
-            cpu_inputs[r] = row[:-1]
-            cpu_targets[r] = row[1:]
-
-        state = {"pq_idx": pq_idx, "rg_idx": rg_idx, "epoch": epoch}
-        # 一次 H2D，之后每次 yield 复用同一块 GPU 显存（零分配）
-        gpu_buffer.copy_(cpu_buffer, non_blocking=use_cuda)
-        yield inputs, targets, state
+    raise NotImplementedError(
+        "待实现：make_dataloader ——\n"
+        "  1) row_capacity = seq_len + 1\n"
+        "  2) batches = iter_documents(split, tokenizer_batch_size, resume_state)\n"
+        "     bos = tokenizer.get_bos_token_id()\n"
+        "     doc_buffer = []  （已 token 化、还没用掉的文档）\n"
+        "  3) 定义 refill()：next(batches) 取一批文本 -> tokenizer.encode(text_batch, prepend=bos, num_threads=...)\n"
+        "     逐篇 append 到 doc_buffer，并更新 pq_idx/rg_idx/epoch\n"
+        "  4) 预分配缓冲区：\n"
+        "       cpu_buffer = torch.empty(2*B*T, dtype=long, pin_memory=use_cuda)\n"
+        "       gpu_buffer = torch.empty(2*B*T, dtype=long, device=device)\n"
+        "       用 .view(B,T) 切出 cpu_inputs/cpu_targets/inputs/targets\n"
+        "  5) while True:\n"
+        "       for r in range(batch_size):\n"
+        "         pos = 0\n"
+        "         while pos < row_capacity:\n"
+        "           while len(doc_buffer) < buffer_size: refill()\n"
+        "           remaining = row_capacity - pos\n"
+        "           A) 线性扫 doc_buffer 找 (best_idx, best_len)，条件 len<=remaining 且 >best_len\n"
+        "           B) if best_idx>=0: pop 出来写入 row[pos:pos+best_len]; pos += best_len\n"
+        "           C) else: 找最短的 pop 出来写入 row[pos:pos+remaining]; pos = row_capacity; break\n"
+        "         cpu_inputs[r] = row[:-1];  cpu_targets[r] = row[1:]\n"
+        "       state = {...}\n"
+        "       gpu_buffer.copy_(cpu_buffer, non_blocking=use_cuda)\n"
+        "       yield inputs, targets, state\n"
+        "\n"
+        "  验证：\n"
+        "    uv run python scratch/check_data.py\n"
+        "    目标：targets == inputs 右移一位 / 每行以 BOS 开头 / 无 padding\n"
+        "参考实现：git show solution:src/data/dataloader.py")

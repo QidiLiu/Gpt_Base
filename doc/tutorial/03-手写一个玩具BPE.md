@@ -74,6 +74,10 @@ rustbpe / tiktoken 内部都处理了这个。本章的玩具版本也会。
 
 新建 `scratch/mini_bpe.py`：
 
+
+<details>
+<summary><b>👀 展开参考答案（先自己想 20 分钟）</b></summary>
+
 ```python
 """
 一个可训练、可推理、可序列化的迷你 BPE。只为了看清原理，不追求任何性能。
@@ -197,6 +201,8 @@ class MiniBPE:
     def decode(self, tokens: list[bytes]) -> str:
         return b"".join(tokens).decode("utf-8", errors="replace")
 ```
+
+</details>
 
 完整可运行版本在 `scratch/mini_bpe.py`（已经写好了，直接跑）。
 

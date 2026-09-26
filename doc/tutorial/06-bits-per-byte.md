@@ -153,6 +153,10 @@ def compute_token_bytes(tok, device="cpu"):
 
 ### 第 1 块：算 `token_bytes`
 
+
+<details>
+<summary><b>👀 展开参考答案（先自己想 20 分钟）</b></summary>
+
 ```python
 def compute_token_bytes(tok, device="cpu") -> torch.Tensor:
     """
@@ -174,7 +178,13 @@ def compute_token_bytes(tok, device="cpu") -> torch.Tensor:
     return arr
 ```
 
+</details>
+
 ### 第 2 块：算 bpb
+
+
+<details>
+<summary><b>👀 展开参考答案（先自己想 20 分钟）</b></summary>
 
 ```python
 @torch.no_grad()
@@ -213,6 +223,8 @@ def evaluate_bpb(model, loader, token_bytes, max_batches: int) -> float:
 
     return total_nats / (math.log(2) * max(total_bytes, 1e-9))
 ```
+
+</details>
 
 ---
 

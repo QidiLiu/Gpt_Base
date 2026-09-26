@@ -154,6 +154,10 @@ best-fit：     65% 的 token 用于训练，但 0% 跨文档
 
 ### 第 1 块：装箱的核心算法（不依赖 torch，纯逻辑，便于理解）
 
+
+<details>
+<summary><b>👀 展开参考答案（先自己想 20 分钟）</b></summary>
+
 ```python
 def pack_row(doc_buffer: list[list[int]], capacity: int) -> tuple[list[int], dict]:
     """
@@ -197,6 +201,8 @@ def pack_row(doc_buffer: list[list[int]], capacity: int) -> tuple[list[int], dic
     return row, dict(capacity=capacity, used=len(row), n_docs=n_docs, cropped=cropped)
 ```
 
+</details>
+
 **注意 `while buf` 里的 `break`**：行装满后必须退出，
 否则最后那个 `row.extend(doc[:remaining])` 里 `remaining` 已经是 0，
 会陷入死循环。
@@ -204,6 +210,10 @@ def pack_row(doc_buffer: list[list[int]], capacity: int) -> tuple[list[int], dic
 ### 第 2 块：和 torch 缓冲区对接
 
 真实实现（`src/data/dataloader.py`）比第 1 块多做了三件事：
+
+
+<details>
+<summary><b>👀 展开参考答案（先自己想 20 分钟）</b></summary>
 
 ```python
 def make_dataloader(tokenizer, batch_size, seq_len, split, device="cuda",
@@ -304,6 +314,8 @@ def make_dataloader(tokenizer, batch_size, seq_len, split, device="cuda",
         gpu_buffer.copy_(cpu_buffer, non_blocking=use_cuda)
         yield inputs, targets, state
 ```
+
+</details>
 
 ---
 

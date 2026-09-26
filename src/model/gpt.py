@@ -1,11 +1,22 @@
 """
 GPT 主干：把 layers.py 的零件组装起来，加上 nanochat 的残差流 trick。
 
-这个文件对应教程卷3 的全部内容。重点：
-  · 用 meta device 三步建模型（避免随机初始化浪费显存带宽）
-  · 5 个残差流 trick：resid_lambdas / x0_lambdas / value_embeds / smear / backout
-  · forward 的两条路径：训练返回 loss，推理返回 logits
-  · logit softcap
+▓▓ 这一章要你敲的部分 ▓▓
+    GPT.__init__            5 个 trick 的开关（卷3）
+    GPT.init_weights        初始化策略 + ★ meta device 的坑（卷3 第 16 章）
+    GPT.forward             组装（卷3）
+    GPT._apply_smear        Smear（卷3 第 19 章）
+    build_model             meta device 三步法（卷3 第 16 章）
+    sample_from_logits      采样顺序（卷7）
+
+────────────────────────────────────────────────────────────────
+卷3 的知识地图
+────────────────────────────────────────────────────────────────
+    ch16  meta device 三步建模型  -> build_model + init_weights 里的 RoPE 重算
+    ch17  resid_lambdas / x0     -> __init__ 的两个 Parameter + forward 里的缩放
+    ch18  Value Embeddings       -> __init__ 的 ModuleDict + attention 的 ve_gate
+    ch19  Smear / Backout        -> _apply_smear + forward 里的残差扣除
+    ch20  滑动窗口注意力          -> window_sizes（只在 config.py 里，这里只消费）
 """
 
 import json
@@ -25,13 +36,13 @@ from model.layers import (
 class GPT(nn.Module):
     def __init__(self, cfg, device=None):
         """
-        ⚠ 大坑：__init__ 可能在 meta device 上执行（见 tutorial/卷3 第一章）。
+        ⚠ 大坑：__init__ 可能在 meta device 上执行（见 tutorial/卷3 第 16 章）。
         所以这个函数里只能算形状和 dtype，**不能有任何真实数据操作**。
         真正的初始化全部放到 init_weights() 里。
         """
         super().__init__()
         self.config = cfg
-        self.window_sizes = cfg.window_sizes()
+        self.window_sizes = cfg.window_sizes()      # 🔶 已给（卷3 第 20 章）
 
         # 词表按 64 对齐。为什么要对齐？
         #   1) DDP 里梯度是按第一个维度切分的，对齐后各 rank 切出来一样大；
@@ -42,33 +53,52 @@ class GPT(nn.Module):
         if padded != cfg.vocab_size:
             log0(f"  词表 {cfg.vocab_size} -> {padded}（对齐到 64，纯性能优化）")
 
-        self.transformer = nn.ModuleDict({
-            "wte": nn.Embedding(padded, cfg.n_embd, device=device),
-            "h": nn.ModuleList([Block(cfg, i, device) for i in range(cfg.n_layer)]),
-        })
-        self.lm_head = Linear(cfg.n_embd, padded, bias=False, device=device)
+        # ❗ 待实现：self.transformer = nn.ModuleDict({...})
+        #   · "wte": nn.Embedding(padded, n_embd)
+        #   · "h":   nn.ModuleList([Block(cfg, i, device) for i in range(n_layer)])
+        # 以及 self.lm_head = Linear(n_embd, padded, bias=False)
+        raise NotImplementedError(
+            "待实现：GPT.__init__ 的主体 ——\n"
+            "  self.transformer = nn.ModuleDict({\n"
+            "      'wte': nn.Embedding(padded, cfg.n_embd, device=device),\n"
+            "      'h':   nn.ModuleList([Block(cfg, i, device) for i in range(cfg.n_layer)]),\n"
+            "  })\n"
+            "  self.lm_head = Linear(cfg.n_embd, padded, bias=False, device=device)\n"
+            "参考实现：git show solution:src/model/gpt.py")
 
-        # ── 以下都是残差流 trick，默认全部关闭 ──────────────────
+        # ---- 以下都是残差流 trick，默认全部关闭（卷3 第 17-19 章）----
+        # ❗ 待实现：5 个开关，各自只在对应的 cfg 标志为 True 时创建
+        #
         # resid_lambdas[i]：第 i 层入口处把残差流整体乘一个可学标量
-        if cfg.use_resid_lambdas:
-            self.resid_lambdas = nn.Parameter(torch.ones(cfg.n_layer, device=device))
+        #   为什么是「逐层」而不是一个全局标量？
+        #   因为不同深度的「信息累积压力」不同：浅层需要更强的缩放来
+        #   避免多次累加后爆炸，深层需要更弱来避免过拟合噪声。
+        #
         # x0_lambdas[i]：第 i 层入口处把「初始嵌入」按比例加回来
-        if cfg.use_x0_lambdas:
-            self.x0_lambdas = nn.Parameter(torch.zeros(cfg.n_layer, device=device))
-        # Smear：把前一个 token 的嵌入按门控混进当前 token
-        if cfg.use_smear:
-            self.smear_gate = Linear(24, 1, bias=False, device=device)
-            self.smear_lambda = nn.Parameter(torch.zeros(1, device=device))
-        # Backout：最后 norm 之前，减去中层残差以抹掉低层特征
-        if cfg.use_backout:
-            self.backout_lambda = nn.Parameter(0.2 * torch.ones(1, device=device))
-        # Value Embeddings：给隔层 + 末层的 attention 额外提供 token 身份信息
-        if cfg.use_value_embeds:
-            kv_dim = cfg.n_kv_head * cfg.head_dim
-            self.value_embeds = nn.ModuleDict({
-                str(i): nn.Embedding(padded, kv_dim, device=device)
-                for i in range(cfg.n_layer) if has_value_embed(i, cfg.n_layer)
-            })
+        #   动机：深层的信息被反复非线性变换，可能「忘了」原文。
+        #   加一条从初始嵌入的直连，让模型随时能取回原始信号。
+        #
+        # smear_gate / smear_lambda：把前一个 token 的嵌入混进当前 token
+        # backout_lambda：最后 norm 之前减去中层残差
+        # value_embeds：给隔层 + 末层提供额外的 token 身份信息
+        #
+        # 注意它们的类型：
+        #   逐层标量 -> nn.Parameter(torch.ones/zeros(n_layer))
+        #   value_embeds -> nn.ModuleDict({str(i): nn.Embedding(padded, kv_dim)})
+        #     只放 has_value_embed(i, n_layer) 为 True 的层（隔层 + 末层）
+        raise NotImplementedError(
+            "待实现：GPT.__init__ 的 5 个 trick 开关 ——\n"
+            "  if cfg.use_resid_lambdas: self.resid_lambdas = nn.Parameter(torch.ones(n_layer, device=device))\n"
+            "  if cfg.use_x0_lambdas:     self.x0_lambdas     = nn.Parameter(torch.zeros(n_layer, device=device))\n"
+            "  if cfg.use_smear:\n"
+            "      self.smear_gate = Linear(24, 1, bias=False, device=device)\n"
+            "      self.smear_lambda = nn.Parameter(torch.zeros(1, device=device))\n"
+            "  if cfg.use_backout:  self.backout_lambda = nn.Parameter(0.2*torch.ones(1, device=device))\n"
+            "  if cfg.use_value_embeds:\n"
+            "      kv_dim = cfg.n_kv_head * cfg.head_dim\n"
+            "      self.value_embeds = nn.ModuleDict({str(i): nn.Embedding(padded, kv_dim, device=device)\n"
+            "                                        for i in range(cfg.n_layer) if has_value_embed(i, cfg.n_layer)})\n"
+            "参考实现：git show solution:src/model/gpt.py")
 
         # RoPE 表。超算 10 倍长度：它很小（seq×head_dim/2×2），
         # 多算一点省得以后要动态增长的麻烦。真的不够时 forward 会 assert。
@@ -81,12 +111,12 @@ class GPT(nn.Module):
         self.register_buffer("sin", sin, persistent=False)
 
     # =======================================================================
-    # 初始化：单独一个函数，因为要在 to_empty(device) 之后调用
+    # ❗ 初始化：单独一个函数，因为要在 to_empty(device) 之后调用
     # =======================================================================
     @torch.no_grad()
     def init_weights(self):
         """
-        一次把所有参数初始化完。集中在一个函数里，是为了「初始化逻辑」可审计。
+        一次把所有参数初始化完。集中在一个函数里是为了「初始化逻辑」可审计。
 
         ── 为什么不用 PyTorch 默认的初始化？─────────────────────
         因为默认初始化（Kaiming uniform）是给 CNN 设计的，对 transformer 不合适：
@@ -98,61 +128,49 @@ class GPT(nn.Module):
           · lm_head std=0.001  —— 输出侧几乎从零开始，训练初期等于「均匀预测」
           · 投影层 c_proj 全零  —— 每个 block 初始是恒等映射，残差流干净
           · 其余用 Uniform 而非 Normal —— 避免离群值
+
+        ★★ 本文件最重要的一个 bug 在这里 ★★
+        __init__ 里算的 cos/sin 是在 **meta device** 上创建的（只有形状）。
+        to_empty() 只给它们分配「未初始化的垃圾内存」，不填任何值 ——
+        实测会直接变成 NaN，整个模型 loss 立刻是 nan。
+        所以凡是「在 __init__ 里创建的、依赖数据的量」，
+        都必须在 init_weights 里用真实设备重算一遍。
+
+        ── 你要写的 ──
+        1) torch.manual_seed(可复现)
+        2) 嵌入/反嵌入：normal_(std=0.8) / normal_(std=0.001)
+        3) 每个 block 的 6 个 Linear：
+             c_q/c_k/c_v -> uniform_(-s, s)
+             mlp.c_fc    -> uniform_(-s*0.4, s*0.4)     0.4 倍
+             c_proj（两个）-> zeros_
+           其中 s = sqrt(3) * n_embd ** -0.5
+           提示：为什么乘 sqrt(3)？Uniform(-s,s) 的标准差是 s/sqrt(3)，
+                乘 sqrt(3) 才能得到和 std=s 的 Normal 一样的尺度。
+        4) 5 个 trick 的参数分别初始化：
+             resid_lambdas -> 逐层递减 1.15 -> 1.05（浅层强、深层弱）
+             x0_lambdas    -> 逐层递减 0.20 -> 0.05（浅层更依赖原文）
+             smear_lambda  -> zeros_（初始关闭）
+             smear_gate    -> uniform_(0, 0.02)
+             backout_lambda-> constant_(0.2)
+             value_embeds  -> uniform_(-s, s)
+             ve_gate       -> uniform_(0, 0.02)
+        5) tie_embeddings 时让 wte 和 lm_head 共享权重
+        6) ★ 重算 RoPE 表（cos/sin）到真实设备
         """
-        cfg = self.config
-        torch.manual_seed(cfg.n_layer * 1000 + cfg.n_embd)  # 形状相同的模型给同一种子
-
-        # 嵌入与反嵌入
-        torch.nn.init.normal_(self.transformer.wte.weight, mean=0.0, std=0.8)
-        torch.nn.init.normal_(self.lm_head.weight, mean=0.0, std=0.001)
-
-        # Uniform(-s, s) 的标准差是 s/√3，所以要乘 √3 才能和 std=s 的 Normal 一样
-        s = math.sqrt(3) * cfg.n_embd ** -0.5
-        for block in self.transformer.h:
-            torch.nn.init.uniform_(block.attn.c_q.weight, -s, s)
-            torch.nn.init.uniform_(block.attn.c_k.weight, -s, s)
-            torch.nn.init.uniform_(block.attn.c_v.weight, -s, s)
-            torch.nn.init.zeros_(block.attn.c_proj.weight)      # 输出投影 = 0 -> 恒等
-            torch.nn.init.uniform_(block.mlp.c_fc.weight, -s * 0.4, s * 0.4)  # 0.4 倍
-            torch.nn.init.zeros_(block.mlp.c_proj.weight)      # 输出投影 = 0 -> 恒等
-
-        if cfg.use_resid_lambdas:
-            # 深层残差缩放小一点：避免信息在深层过度累积
-            for i in range(cfg.n_layer):
-                self.resid_lambdas.data[i] = 1.15 - 0.10 * i / max(cfg.n_layer - 1, 1)
-        if cfg.use_x0_lambdas:
-            # 浅层更依赖原始嵌入，深层更少
-            for i in range(cfg.n_layer):
-                self.x0_lambdas.data[i] = 0.20 - 0.15 * i / max(cfg.n_layer - 1, 1)
-        if cfg.use_smear:
-            torch.nn.init.zeros_(self.smear_lambda)      # 初始关闭：门控 sigmoid(0)=0.5 但 lambda=0
-            torch.nn.init.uniform_(self.smear_gate.weight, 0.0, 0.02)
-        if cfg.use_backout:
-            torch.nn.init.constant_(self.backout_lambda, 0.2)
-        if cfg.use_value_embeds:
-            for ve in self.value_embeds.values():
-                torch.nn.init.uniform_(ve.weight, -s, s)
-            for block in self.transformer.h:
-                if block.attn.ve_gate is not None:
-                    torch.nn.init.uniform_(block.attn.ve_gate.weight, 0.0, 0.02)
-
-        if cfg.tie_embeddings:
-            # 权重绑定：wte 和 lm_head 共享同一份参数
-            self.transformer.wte.weight = self.lm_head.weight
-
-        # ── 必须在这里重算 RoPE 表 ─────────────────────────────
-        # __init__ 里算的 cos/sin 是在 **meta device** 上创建的（只有形状）。
-        # to_empty() 只给它们分配「未初始化的垃圾内存」，不填任何值 ——
-        # 实测会直接变成 NaN，整个模型 loss 立刻是 nan。
-        # 这就是 meta device 三步法最容易踩的坑：
-        #   凡是「在 __init__ 里创建的、依赖数据的量」，都必须在 init_weights 里重算。
-        cos, sin = precompute_rope(
-            self.rotary_seq_len, cfg.head_dim, base=cfg.rope_base,
-            device=self.get_device(), dtype=COMPUTE_DTYPE)
-        self.cos, self.sin = cos, sin
+        raise NotImplementedError(
+            "待实现：init_weights —— 见 docstring 的六步\n"
+            "\n"
+            "  ★ 最容易漏的一步：重算 RoPE\n"
+            "    cos, sin = precompute_rope(self.rotary_seq_len, cfg.head_dim,\n"
+            "                                 base=cfg.rope_base, device=self.get_device(),\n"
+            "                                 dtype=COMPUTE_DTYPE)\n"
+            "    self.cos, self.sin = cos, sin\n"
+            "  漏了这步 -> cos/sin 是 meta device 的垃圾内存 -> loss 立刻 nan\n"
+            "  验证：uv run pytest -k uniform -v（初始 loss 应 ≈ ln(vocab_size)）\n"
+            "参考实现：git show solution:src/model/gpt.py")
 
     # =======================================================================
-    # 参数统计
+    # 📖 只读：参数统计（纯诊断代码，理解即可，不用敲）
     # =======================================================================
     def num_matmul_params(self) -> int:
         """
@@ -198,134 +216,11 @@ class GPT(nn.Module):
         return (self.config.n_layer * 2 * self.config.n_kv_head
                 * self.config.head_dim * COMPUTE_DTYPE.itemsize)
 
-    # =======================================================================
-    # forward
-    # =======================================================================
-    def forward(self, idx, targets=None, kv_cache=None, loss_reduction="mean"):
-        """
-        idx      (B, T)  int64，token id
-        targets  (B, T)  int64，-1 表示「这个位置不参与 loss」
-        返回：有 targets -> loss；无 targets -> logits (B, T, vocab_size)
-        """
-        cfg = self.config
-        B, T = idx.shape
-        assert T <= self.cos.size(1), (
-            f"序列长度超过 RoPE 表容量：{T} > {self.cos.size(1)}"
-        )
-
-        # KV cache 场景下要从「当前位置」开始取 RoPE
-        T0 = 0 if kv_cache is None else kv_cache.get_pos()
-        cos_sin = (self.cos[:, T0:T0 + T], self.sin[:, T0:T0 + T])
-
-        # (1) 查表得到初始嵌入
-        x = self.transformer.wte(idx)
-        x = rms_norm(x.to(COMPUTE_DTYPE))   # 嵌入后立刻归一化，固定住残差流的起点尺度
-
-        # (2) Smear：把前一个 token 的嵌入混进来
-        if hasattr(self, "smear_lambda"):
-            x = self._apply_smear(x, kv_cache)
-
-        # (3) 逐层前向
-        x0 = x
-        backout_layer = cfg.n_layer // 2
-        x_backout = None
-        for i, block in enumerate(self.transformer.h):
-            if hasattr(self, "resid_lambdas"):
-                x = self.resid_lambdas[i] * x
-            if hasattr(self, "x0_lambdas"):
-                x = x + self.x0_lambdas[i] * x0
-            ve = (self.value_embeds[str(i)](idx).to(x.dtype)
-                  if hasattr(self, "value_embeds") and str(i) in self.value_embeds else None)
-            x = block(x, cos_sin, self.window_sizes[i], kv_cache, ve)
-            if i == backout_layer:
-                x_backout = x
-
-        # (4) Backout：减掉中层残差
-        if x_backout is not None and hasattr(self, "backout_lambda"):
-            x = x - self.backout_lambda.to(x.dtype) * x_backout
-
-        x = rms_norm(x)
-
-        # (5) 输出头
-        logits = self.lm_head(x)                      # (B, T, padded_vocab)
-        logits = logits[..., :cfg.vocab_size]          # 切掉 padding 部分
-        logits = logits.float()                        # 后面要算 CE，fp32 更稳
-
-        # (6) Logit softcap：平滑地把 logits 压到 [-15, 15]
-        #     为什么需要？训练久了某些 token 的 logit 会涨到 30+，
-        #     指数函数在那个区间已经饱和，梯度趋近 0，且 fp32 也开始损失精度。
-        #     tanh softcap 相当于给 logits 加了个软上限。
-        if cfg.logit_softcap > 0:
-            cap = cfg.logit_softcap
-            logits = cap * torch.tanh(logits / cap)
-
-        if targets is not None:
-            loss = F.cross_entropy(
-                logits.view(-1, logits.size(-1)), targets.view(-1),
-                ignore_index=-1, reduction=loss_reduction)
-            # reduction='none' 时 F.cross_entropy 返回扁平的 (B*T,)，
-            # 这里 reshape 回 (B, T) 让调用方（评测、RL）能按位置处理。
-            if loss_reduction == "none":
-                loss = loss.view(B, T)
-            elif loss_reduction == "mean" and not torch.isfinite(loss):
-                # 整批 target 都被 ignore（都是 -1）时，F.cross_entropy 算的是 0/0 = NaN。
-                # 这通常意味着上游的 mask 逻辑出了 bug（例如截断把监督信号全切掉了）。
-                # 这里降级成 0 而不是让 NaN 污染全部权重 —— 后者不可恢复。
-                log0("  [警告] 本批没有有效的监督 token（targets 全为 -1），loss 记为 0。"
-                     "通常是截断策略把 assistant 部分切掉了，检查 truncate 参数。")
-                loss = logits.sum() * 0.0
-            return loss
-        return logits
-
-    def _apply_smear(self, x, kv_cache):
-        """
-        Smear：x[i] = x[i] + lambda * sigmoid(gate) * x[i-1]
-
-        动机：只从 token 身份学到的嵌入里没有任何「上一个词是什么」的信息。
-        注意力理论上能自己学出来，但在浅层很难。把前一个 token 的嵌入
-        直接加过来，等于免费给了模型一个 bigram 线索。
-        """
-        B, T, _ = x.shape
-        Tq = x.size(1)
-        if kv_cache is None:
-            assert T > 1, "训练时序列长度必须 > 1"
-            gate = self.smear_lambda.to(x.dtype) * torch.sigmoid(self.smear_gate(x[:, 1:, :24]))
-            return torch.cat([x[:, :1], x[:, 1:] + gate * x[:, :-1]], dim=1)
-        # 推理：单个 token 时要靠 cache 记住上一步的嵌入
-        prev = kv_cache.prev_embedding
-        kv_cache.prev_embedding = x[:, -1:, :]
-        if Tq > 1:  # prefill，和训练一致
-            gate = self.smear_lambda.to(x.dtype) * torch.sigmoid(self.smear_gate(x[:, 1:, :24]))
-            return torch.cat([x[:, :1], x[:, 1:] + gate * x[:, :-1]], dim=1)
-        if prev is not None:  # decode
-            gate = self.smear_lambda.to(x.dtype) * torch.sigmoid(self.smear_gate(x[:, :, :24]))
-            return x + gate * prev
-        return x
-
-    # =======================================================================
-    # 推理（朴素版；带 KV cache 的高效版在 inference/engine.py）
-    # =======================================================================
-    @torch.inference_mode()
-    def generate(self, tokens, max_tokens, temperature=1.0, top_k=None, seed=42):
-        """
-        朴素自回归：每生成一个 token 就把整条序列重新前向一次。
-        O(L^2) 的重复计算。存在的意义是让你看清「KV cache 到底省了什么」
-        —— inference/engine.py 会做同样的事但复用缓存，教程卷7 会对比。
-        """
-        assert isinstance(tokens, list)
-        device = self.get_device()
-        rng = torch.Generator(device=device).manual_seed(seed) if temperature > 0 else None
-        ids = torch.tensor([tokens], dtype=torch.long, device=device)
-        for _ in range(max_tokens):
-            logits = self.forward(ids)[:, -1, :]
-            next_id = sample_from_logits(logits, rng, temperature, top_k)
-            ids = torch.cat((ids, next_id), dim=1)
-            yield next_id.item()
-
     def get_device(self):
         return self.transformer.wte.weight.device
 
     def describe(self) -> str:
+        """把模型结构打印成一张表。只读代码，理解即可。"""
         cfg = self.config
         lines = [
             "── 模型结构 ──────────────────────────────",
@@ -339,8 +234,7 @@ class GPT(nn.Module):
             f"  归一化         : {cfg.norm_type}",
             f"  QK-Norm 缩放   : {cfg.qk_norm_scale if cfg.qk_norm_scale > 0 else '关闭'}",
             f"  激活           : {cfg.activation}",
-            f"  滑窗模式       : {cfg.window_pattern}"
-            f" -> {self.window_sizes}",
+            f"  滑窗模式       : {cfg.window_pattern} -> {self.window_sizes}",
             f"  权重绑定       : {cfg.tie_embeddings}",
             f"  logit softcap  : {cfg.logit_softcap if cfg.logit_softcap > 0 else '关闭'}",
         ]
@@ -358,28 +252,161 @@ class GPT(nn.Module):
         lines.append("──────────────────────────────────────────")
         return "\n".join(lines)
 
+    # =======================================================================
+    # ❗ forward：组装（卷3）
+    # =======================================================================
+    def forward(self, idx, targets=None, kv_cache=None, loss_reduction="mean"):
+        """
+        idx      (B, T)  int64，token id
+        targets  (B, T)  int64，-1 表示「这个位置不参与 loss」
+        返回：有 targets -> loss；无 targets -> logits (B, T, vocab_size)
 
+        ── 六个步骤 ──────────────────────────────────────────
+        1) 查表得到初始嵌入，然后**立刻归一化**
+           为什么？固定住残差流的起点尺度。否则后面的层数一多，
+           尺度会随机漂移，初始化完全不可控。
+
+        2) Smear（如果有）：把前一个 token 的嵌入混进来 -> _apply_smear
+
+        3) 逐层前向。每层入口处按开关做缩放：
+             x = resid_lambdas[i] * x
+             x = x + x0_lambdas[i] * x0            （x0 是第 1 步的初始嵌入）
+           然后取 value_embeds[str(i)](idx)（如果有这一层）
+           再 block(x, ...)
+
+        4) Backout（如果有）：在最后一层之前 cache 住中层残差，
+           最后减去 backout_lambda * x_backout
+
+        5) 最后再归一化，然后 lm_head
+
+        6) 切掉 padding 部分 -> 转 fp32 -> logit softcap
+             softcap: cap * tanh(logits / cap)
+             为什么需要？训练久了某些 token 的 logit 会涨到 30+，
+             指数函数在那个区间已经饱和，梯度趋近 0，
+             且 fp32 也开始损失精度。tanh softcap 相当于给 logits 加软上限。
+
+        ── 两个必须做对的细节 ──────────────────────────────
+        (a) reduction='none' 时 F.cross_entropy 返回扁平的 (B*T,)，
+            要 reshape 回 (B, T) —— 评测和 RL 都依赖这个形状。
+        (b) reduction='mean' 且整批 target 都被 ignore（都是 -1）时，
+            F.cross_entropy 算出 0/0 = NaN。必须降级成 0 并告警，
+            否则 NaN 会污染全部参数且不可恢复。
+            （这在 SFT 里真的发生过：truncate 策略把监督信号全切掉了，
+              512 长度下 23% 的样本会踩中。见 tutorial/卷1 第 04 章）
+        """
+        raise NotImplementedError(
+            "待实现：GPT.forward —— 见 docstring 的六步\n"
+            "  关键提示：\n"
+            "  · T0 = 0 if kv_cache is None else kv_cache.get_pos()\n"
+            "    cos_sin = (self.cos[:, T0:T0+T], self.sin[:, T0:T0+T])\n"
+            "  · x = rms_norm(self.transformer.wte(idx).to(COMPUTE_DTYPE))\n"
+            "  · hasattr(self, 'smear_lambda') 时调 _apply_smear\n"
+            "  · 循环里 hasattr(self,'resid_lambdas') / hasattr(self,'x0_lambdas') / value_embeds\n"
+            "  · backout_layer = n_layer // 2，在该层后 cache x\n"
+            "  · logits = self.lm_head(rms_norm(x))[..., :cfg.vocab_size].float()\n"
+            "  · if cfg.logit_softcap > 0: logits = cap * tanh(logits / cap)\n"
+            "  · loss = F.cross_entropy(..., reduction=loss_reduction)\n"
+            "    reduction=='none' -> loss.view(B, T)\n"
+            "    reduction=='mean' 且非有限 -> 降级成 0 并 log0 告警\n"
+            "验证：uv run pytest -k \"uniform or loss_reduction or ignore or causal\" -v")
+
+    # =======================================================================
+    # ❗ Smear（卷3 第 19 章）
+    # =======================================================================
+    def _apply_smear(self, x, kv_cache):
+        """
+        Smear：x[i] = x[i] + lambda * sigmoid(gate) * x[i-1]
+
+        ── 动机 ────────────────────────────────────────────
+        只从 token 身份学到的嵌入里，没有任何「上一个词是什么」的信息。
+        注意力理论上能自己学出来，但在浅层很难。
+        把前一个 token 的嵌入直接加过来，等于免费给了模型一个 bigram 线索。
+
+        ── 你要写的：两条路径 ────────────────────────────────
+        (1) kv_cache is None（训练 / 朴素生成）
+            整条序列都在手上，直接切片：
+              gate = smear_lambda * sigmoid(smear_gate(x[:, 1:, :24]))
+              return cat([x[:, :1], x[:, 1:] + gate * x[:, :-1]], dim=1)
+            提示：位置 0 没有「前一个 token」，所以原样保留。
+
+        (2) kv_cache 不为 None（推理）
+            单个 token 时要靠 cache 记住上一步的嵌入：
+              prev = kv_cache.prev_embedding
+              kv_cache.prev_embedding = x[:, -1:, :]     ← 存下当前，供下一步用
+              T == 1 且 prev 不为 None -> x = x + gate * prev
+              T > 1（prefill）      -> 和训练一样的切片逻辑
+
+        为什么要存 prev_embedding？
+            decode 时每次只喂一个 token，模型看不到前一个 token 的嵌入
+            （它的 k/v 在 cache 里，但**嵌入**不在）。Smear 需要它。
+        """
+        raise NotImplementedError(
+            "待实现：_apply_smear —— 见 docstring 的两条路径\n"
+            "  注意 prefill (T>1) 和 decode (T==1) 要分开处理\n"
+            "参考实现：git show solution:src/model/gpt.py")
+
+    # =======================================================================
+    # ❗ 采样（卷7 第 39 章）
+    # =======================================================================
+    @torch.inference_mode()
+    def generate(self, tokens, max_tokens, temperature=1.0, top_k=None, seed=42):
+        """
+        朴素自回归：每生成一个 token 就把整条序列重新前向一次。
+        O(L^2) 的重复计算。存在的意义是让你看清「KV cache 到底省了什么」
+        —— inference/engine.py 会做同样的事但复用缓存。
+        """
+        assert isinstance(tokens, list)
+        device = self.get_device()
+        rng = torch.Generator(device=device).manual_seed(seed) if temperature > 0 else None
+        ids = torch.tensor([tokens], dtype=torch.long, device=device)
+        for _ in range(max_tokens):
+            logits = self.forward(ids)[:, -1, :]
+            next_id = sample_from_logits(logits, rng, temperature, top_k)
+            ids = torch.cat((ids, next_id), dim=1)
+            yield next_id.item()
+
+    # =======================================================================
+    # ❗ sample_from_logits（卷7）
+    # =======================================================================
 def sample_from_logits(logits, rng, temperature=1.0, top_k=None):
     """
     从 logits 里采一个 token。
 
-    顺序很讲究：**先 top-k 裁剪，再除温度，再 softmax**。
-    如果先除温度再裁剪，被裁掉的 token 仍然参与了温度缩放，
-    边界位置会有微小的数值差异。教程卷7 会详细讲这个顺序。
+    ── 采样顺序很讲究 ──────────────────────────────────────
+        1) temperature == 0  -> 直接 argmax（贪心，完全确定）
+        2) top_k 裁剪        -> 只保留概率最高的 k 个，其余置 -inf
+        3) 除以 temperature
+        4) softmax
+        5) multinomial
+
+    为什么 top_k 要在除温度之前？
+      温度是对 logits 做缩放，它不改变排序。先除温度再 top_k，
+      被裁掉的位置依然是 -inf，结果其实一样 ——
+      但先 top_k 可以保证「只有 k 个数参与后续计算」，
+      在 vocab 很大时是实打实的性能差异。
+
+    ── 你要写的 ──
+    ⚠ 一个真实的 bug：`logits.topk(k, dim=-1)` 返回的是 **namedtuple**，
+      要用 `.values` / `.indices` 访问。
+      曾经写成 `v, _ = logits.topk(...)` 然后用 `v.indices`，
+      结果 v 是 Tensor，`.indices` 报 TypeError。
+
+    验证：uv run pytest -k "sampling or topk" -v
     """
-    if temperature == 0.0:
-        return logits.argmax(dim=-1, keepdim=True)
-    if top_k is not None and top_k > 0:
-        k = min(top_k, logits.size(-1))
-        # 注意：topk 返回的是 namedtuple，要用 .values / .indices 访问，
-        # 不能解包成 (v, _) 然后访问 v.indices —— 那是 Tensor 不是 namedtuple
-        top = logits.topk(k, dim=-1)
-        logits = torch.full_like(logits, float("-inf"))
-        logits.scatter_(-1, top.indices, top.values)   # 只保留 top-k 的原始值
-    probs = F.softmax(logits / temperature, dim=-1)
-    return torch.multinomial(probs, num_samples=1, generator=rng)
+    raise NotImplementedError(
+        "待实现：sample_from_logits ——\n"
+        "  if temperature == 0.0: return logits.argmax(dim=-1, keepdim=True)\n"
+        "  if top_k is not None and top_k > 0:\n"
+        "      top = logits.topk(min(top_k, logits.size(-1)), dim=-1)   # namedtuple!\n"
+        "      logits = torch.full_like(logits, float('-inf'))\n"
+        "      logits.scatter_(-1, top.indices, top.values)\n"
+        "  probs = F.softmax(logits / temperature, dim=-1)\n"
+        "  return torch.multinomial(probs, num_samples=1, generator=rng)")
 
 
+# ===========================================================================
+# ❗ meta device 三步法（卷3 第 16 章）
+# ===========================================================================
 def build_model(cfg, device="cuda") -> GPT:
     """
     【meta device 三步法】建模型。
@@ -391,15 +418,26 @@ def build_model(cfg, device="cuda") -> GPT:
         · 再走 PCIe 搬 16 GB（更慢）
         · 峰值内存 = CPU 16 GB + GPU 16 GB
 
-    meta device 三步法完全跳过这两步：
+    三步法完全跳过这两步：
         1) with torch.device("meta"): 只算形状，不分配任何内存，不产生随机数
         2) model.to_empty(device)  : 直接在目标设备上分配（内容是垃圾数据）
         3) model.init_weights()    : 在 GPU 上原地初始化
 
     峰值内存从 (CPU 16G + GPU 16G) 降到 (GPU 16G)，而且快得多。
+
+    ── 你要写的 ──
+    提示：torch.device("meta") 可以用作 context manager，
+    在里面创建的任何张量都只在 meta 上有个「形状壳」。
+
+    ⚠ 三步法的代价：init_weights 必须负责重算**所有**
+      「在 __init__ 里创建的、依赖数据的量」。本项目里就是 cos/sin。
+      漏了 -> NaN。这是 meta device 最常见的坑。
     """
-    with torch.device("meta"):
-        model = GPT(cfg)
-    model.to_empty(device=device)
-    model.init_weights()
-    return model
+    raise NotImplementedError(
+        "待实现：build_model ——\n"
+        "  with torch.device('meta'):\n"
+        "      model = GPT(cfg)\n"
+        "  model.to_empty(device=device)\n"
+        "  model.init_weights()\n"
+        "  return model\n"
+        "验证：uv run pytest -k uniform -v（loss 应 ≈ ln(vocab_size)，不是 nan）")

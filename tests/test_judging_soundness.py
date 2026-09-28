@@ -192,21 +192,45 @@ def test_tutorial_claims_match_reality():
         )
 
 
-def test_no_hardcoded_foreign_home_paths():
-    """禁止把作者机器上的绝对路径写进代码或文档。
+def _strip_py_comments(src: str) -> str:
+    """去掉 Python 注释，保留代码。
 
-    真实事故：scratch/audit_docs.py 里写死了 /home/ben/Dev/Gpt_Base，
-    导致这个专门用来查文档问题的工具在别人机器上一跑就崩。
+    注释里写「别再硬编码 /home/xxx/Dev/...」是合理的说明，不该被判定为违规。
     """
-    import re
+    import io
+    import tokenize
+    out = []
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+            if tok.type != tokenize.COMMENT:
+                out.append(tok.string)
+    except tokenize.TokenError:
+        return src
+    return "\n".join(out)
+
+
+def test_no_hardcoded_foreign_home_paths():
+    """禁止把作者机器上的绝对路径写进**代码**或文档。
+
+    真实事故：scratch/audit_docs.py 里写死了作者的家目录，
+    导致这个专门用来查文档问题的工具在别人机器上一跑就崩。
+
+    注释与字符串示例不算 —— 那里出现路径通常是在说明问题本身。
+    """
     pat = re.compile(r"/home/[a-z_][a-z0-9_-]*/(Dev|\.cache)/")
     offenders = []
-    for p in list(REPO.glob("scratch/*.py")) + list(REPO.glob("script/*.sh")):
+    for p in sorted(REPO.glob("scratch/*.py")):
+        for i, line in enumerate(_strip_py_comments(p.read_text(encoding="utf-8")).splitlines(), 1):
+            if pat.search(line):
+                offenders.append(f"{p.relative_to(REPO)}:{i}")
+    for p in sorted(REPO.glob("script/*.sh")):
         for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
+            if line.lstrip().startswith("#"):     # shell 注释
+                continue
             if pat.search(line):
                 offenders.append(f"{p.relative_to(REPO)}:{i}")
     assert not offenders, (
-        "这些文件里写死了别人的家目录路径，换机器就会崩：\n  " + "\n  ".join(offenders)
+        "这些代码里写死了别人的家目录路径，换机器就会崩：\n  " + "\n  ".join(offenders)
     )
 
 

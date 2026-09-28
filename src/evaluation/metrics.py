@@ -11,6 +11,8 @@
 """
 
 import math
+from math import comb
+
 import torch
 import torch.nn.functional as F
 
@@ -168,13 +170,24 @@ def compute_pass_at_k(outcomes: list[list[bool]], k: int) -> float:
 
     C(a,b) = 0 当 a < b（样本不够挑，必然有一个对的）。
 
+    ── ★ 这里最容易写错的一处 ──────────────────────────────
+      公式里的 c 是「n 个样本里对了几个」的**总数**，
+      不是「前 k 个里对了几个」。两者的含义完全不同：
+
+        c = sum(outcomes)          ✅ 总正确数
+        c = sum(outcomes[:k])      ❌ 只数了前 k 个
+
+      写成后者的话，正确的样本若恰好不在前 k 位，c 就会被算成 0，
+      pass@k 直接归零。实测 [F,F,F,T] 在 k=1 时会返回 0（正确值 0.25）。
+
     这个公式的价值在于：**可以用 n > k 的采样来更稳地估 pass@k**。
+    特别地，k=1 时式子化简正好是 c/n —— 于是「用 n 个样本估 pass@1」
+    和「取单个样本」是同一个量，但前者方差小得多（n=4 时标准差约为 n=1 的一半）。
     """
-    from math import comb
     n = len(outcomes)
     if n == 0:
         return 0.0
-    c = sum(outcomes[:k]) if k <= n else 0
+    c = sum(outcomes)                      # ★ 总正确数，不是 sum(outcomes[:k])
     if n - c < k:
         return 1.0
     return 1.0 - comb(n - c, k) / comb(n, k)

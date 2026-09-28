@@ -105,8 +105,8 @@ def main():
     log0("  小模型在这个任务上通常接近 0，别气馁 —— 看格式对不对就行。")
     task = GSM8K("main", "test")
     n = min(len(task), args.gsm8k_examples)
-    pass1 = 0.0
     shown = 0
+    per_example = []
     for i in range(n):
         ex = task[i]
         prompt = (f"<|user_start|>{ex['messages'][0]['content']}<|user_end|>"
@@ -115,18 +115,24 @@ def main():
         outs, _ = engine.generate_batch(ids, num_samples=args.num_samples,
                                         max_tokens=192, temperature=0.8,
                                         top_k=40, seed=i, use_tools=True)
-        outs = outs[:1]   # pass@1 只看第一条
-        text = tokenizer.decode(outs[0][len(ids):])
-        ok = task.evaluate(ex, text)
-        pass1 += ok
+        # ★ 用满 num_samples 条，而不是 outs[:1]。
+        #   pass@1 的无偏估计式化简后正好是 c/n（n 个样本里的正确比例），
+        #   所以「用 n 条估 pass@1」和「只看第 1 条」是同一个量，
+        #   但前者方差低得多（n=4 时标准差约为 n=1 的一半）。
+        #   之前 outs[:1] 既浪费了 3/4 的采样，又拿到了更抖的估计。
+        oks = [task.evaluate(ex, tokenizer.decode(o[len(ids):])) for o in outs]
+        per_example.append(oks)
         if shown < 2:
             shown += 1
             log0(f"  题目: {ex['messages'][0]['content'][:90]}")
-            log0(f"  正确答案: {ex['gold_answer']} | 判对: {bool(ok)}")
-            log0(f"  模型输出: {text[:220]!r}")
+            log0(f"  正确答案: {ex['gold_answer']} | "
+                 f"{sum(oks)}/{len(oks)} 条判对")
+            log0(f"  模型输出: {tokenizer.decode(outs[0][len(ids):])[:220]!r}")
             log0("")
-    results["gsm8k_pass@1"] = pass1 / max(n, 1)
-    log0(f"  GSM8K pass@1 = {results['gsm8k_pass@1']*100:5.1f}%  (n={n})")
+    pass1 = sum(compute_pass_at_k(oks, k=1) for oks in per_example) / max(n, 1)
+    results["gsm8k_pass@1"] = pass1
+    log0(f"  GSM8K pass@1 = {pass1*100:5.1f}%  "
+         f"(n={n} 题 × {args.num_samples} 采样)")
 
     # ---- 3) 多轮对话展示 ----
     log0("\n── 3) 多轮对话 " + "─" * 52)

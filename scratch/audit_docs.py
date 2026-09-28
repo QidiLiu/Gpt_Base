@@ -23,14 +23,34 @@ def note(ok, where, msg):
 
 # ── 1. 测试数量 ──────────────────────────────────────────────
 # test_judging_soundness.py 是判据自检（不测手抄目标），不计入章节判据。
+#
+# 注意：用 pytest 实际 collect 的数量，而不是 `^def test_` 的行数 ——
+# 参数化（@pytest.mark.parametrize）会让 1 个函数收集出多个用例，
+# 两者对不上会让文档里的数字失真。
 CHAPTER_TESTS = {"test_core.py": 18, "test_data.py": 19,
                  "test_presets.py": 6, "test_optim.py": 12,
-                 "test_metrics.py": 11}
+                 "test_metrics.py": 11, "test_checkpoint.py": 15,
+                 "test_dataloader_resume.py": 10}
 SOUNDNESS = "test_judging_soundness.py"
 
+
+def _collected(paths):
+    """用 pytest 实际 collect 出来的用例数。跑不起来就退回数函数。"""
+    r = subprocess.run([sys.executable, "-m", "pytest", *paths,
+                        "--collect-only", "-q"],
+                       cwd=ROOT, capture_output=True, text=True)
+    m = re.search(r"(\d+) tests? collected", r.stdout)
+    if m:
+        return int(m.group(1))
+    total = 0
+    for p in paths:
+        total += len(re.findall(r"^def test_", pathlib.Path(p).read_text(), re.M))
+    return total
+
+
 counts = {}
-for f in (ROOT / "tests").glob("test_*.py"):
-    counts[f.name] = len(re.findall(r"^def test_", f.read_text(), re.M))
+for f in sorted((ROOT / "tests").glob("test_*.py")):
+    counts[f.name] = _collected([str(f)])
 
 chapter_counts = {k: v for k, v in counts.items() if k in CHAPTER_TESTS}
 total = sum(chapter_counts.values())

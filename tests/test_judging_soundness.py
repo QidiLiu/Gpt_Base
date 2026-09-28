@@ -127,22 +127,33 @@ def test_boolean_reduction_tests_are_nan_safe():
 # ===========================================================================
 # 3. 章节判据不许被删空或改成永真
 # ===========================================================================
+def _collected(path):
+    """pytest 实际 collect 的用例数（参数化会让 1 个函数收集出多个）。"""
+    r = subprocess.run([sys.executable, "-m", "pytest", str(path),
+                        "--collect-only", "-q"],
+                       cwd=REPO, capture_output=True, text=True)
+    m = re.search(r"(\d+) tests? collected", r.stdout)
+    return int(m.group(1)) if m else -1
+
+
 def test_chapter_suites_still_have_enough_cases():
     """每个卷的判据文件不能被掏空 —— 判据变少 = 保护变弱，且不易察觉。"""
     expected = {
-        "test_presets.py": 6,    # 卷0（只读，应全绿）
-        "test_data.py": 19,      # 卷1
-        "test_core.py": 18,      # 卷2-3
-        "test_optim.py": 12,     # 卷4
-        "test_metrics.py": 11,   # 卷7 只读代码的回归护栏
+        "test_presets.py": 6,          # 卷0（只读，应全绿）
+        "test_data.py": 19,            # 卷1
+        "test_core.py": 18,            # 卷2-3
+        "test_optim.py": 12,           # 卷4
+        "test_metrics.py": 11,         # 卷7 只读代码护栏
+        "test_checkpoint.py": 15,      # 卷5 只读代码护栏
+        "test_dataloader_resume.py": 10,  # 卷1 第05章（精确续训）
     }
     for name, minimum in expected.items():
         path = TESTS / name
         assert path.exists(), f"判据文件不见了：{path}"
-        n = sum(1 for _ in _test_functions(path))
-        assert n >= minimum, (
-            f"{name} 只剩 {n} 个用例（应 >= {minimum}）。"
-            f"判据被删会让 progress.sh 失去意义。"
+        n = _collected(path)
+        assert n == minimum, (
+            f"{name} 收集到 {n} 个用例，应为 {minimum}。"
+            f"判据被删/被加会让 progress.sh 和文档里的数字失真。"
         )
 
 
@@ -181,10 +192,11 @@ def test_tutorial_claims_match_reality():
             f"README 说 scratch 有 {claimed} 个脚本，实际 {n_scratch} 个"
         )
 
-    # 测试总数：只数「章节判据」，判据自检文件本身不计入
+    # 测试总数：只数「章节判据」，判据自检文件本身不计入。
+    # 用 pytest 实际 collect 的数（参数化会让 1 个函数收集出多个用例），
+    # 与 audit_docs.py、文档里的口径保持一致。
     n_tests = sum(
-        sum(1 for _ in _test_functions(p))
-        for p in TESTS.glob("test_*.py")
+        _collected(p) for p in sorted(TESTS.glob("test_*.py"))
         if p.name != "test_judging_soundness.py"
     )
     m = re.search(r"tests/\s+(\d+) 个测试", readme)

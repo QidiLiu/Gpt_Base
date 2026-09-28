@@ -131,7 +131,7 @@ def test_chapter_suites_still_have_enough_cases():
     """每个卷的判据文件不能被掏空 —— 判据变少 = 保护变弱，且不易察觉。"""
     expected = {
         "test_presets.py": 6,    # 卷0（只读，应全绿）
-        "test_data.py": 15,      # 卷1
+        "test_data.py": 19,      # 卷1
         "test_core.py": 18,      # 卷2-3
         "test_optim.py": 12,     # 卷4
     }
@@ -252,8 +252,10 @@ def test_answer_holding_scripts_are_not_pre_solved():
         "toy_bpe.py": "02 章 看 BPE 合并过程",
         "packing_demo.py": "05 章 best-fit 装箱",
         "naive_dataloader.py": "05 章 naive 基线",
-        "check_data.py": "01 章 验证数据管线不变量",
     }
+    # 注意：check_data.py 不在此列。它只有三条 assert（不变量检查），
+    # 不含任何可抄的算法，而那些不变量在 dataloader.py 的 docstring 里已经写明，
+    # 抽掉它只会删掉一个有用的验证工具，并不会收回任何答案。
     leaked = []
     for name, chapter in targets.items():
         path = REPO / "scratch" / name

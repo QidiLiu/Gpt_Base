@@ -40,29 +40,35 @@ def evaluate_bpb(model, loader, token_bytes, max_batches: int) -> float:
     最后这个形式最干净：只需要累加「总 nats」和「总字节数」两个数。
 
     参考量级：随机字节约 8 bpb，自然英语约 1.0-1.5，训练良好的小模型约 0.8-1.0。
+
+    ⚠ 虽是 `src/evaluation/`（卷7 只读），但本函数是**卷1 第 06 章的手抄目标**
+      （doc/tutorial/06-bits-per-byte.md「第 2 块：算 bpb」就是它），
+      所以在 main 分支上是骨架。同文件其余函数是只读的。
     """
-    model.eval()
-    was_training = model.training
-    total_nats, total_bytes = 0.0, 0.0
-
-    for i, batch in enumerate(loader):
-        if i >= max_batches:
-            break
-        # dataloader 产出 (x, y, state)；这里只关心前两个
-        x, y = batch[0], batch[1]
-        x, y = x.to(model.get_device()), y.to(model.get_device())
-        # 逐 token 的 loss，reduction='none' 才能拿到每个位置的值
-        loss_vec = model(x, y, loss_reduction="none")          # (B, T)
-        valid = (y >= 0)                                        # -1 是不计 loss 的位置
-        total_nats += loss_vec[valid].sum().item()
-        total_bytes += token_bytes[y[valid]].sum().item()
-
-    if was_training:
-        model.train()
-
-    bpb = total_nats / (math.log(2) * max(total_bytes, 1e-9))
-    log0(f"  bpb: 总 nats={total_nats:,.0f} / 总字节={total_bytes:,.0f} -> {bpb:.4f}")
-    return bpb
+    raise NotImplementedError(
+        "待实现：evaluate_bpb ——\n"
+        "  1) ★ 先记住 was_training = model.training，再 model.eval()\n"
+        "       （顺序不能反！eval() 会把 training 置成 False，\n"
+        "         先 eval 再读就永远读到 False，还原逻辑成了死代码。\n"
+        "         train_base.py 会在训练中途调用本函数，模型被留在 eval 模式\n"
+        "         就会一直 eval 下去 —— 现在因为没有 dropout 看不出问题，\n"
+        "         但哪天加了 dropout 就会静默训坏。）\n"
+        "  2) 遍历 loader，最多 max_batches 个 batch：\n"
+        "       x, y = batch[0], batch[1]  （dataloader 产出三元组，只取前两个）\n"
+        "       x, y = x.to(model.get_device()), y.to(model.get_device())\n"
+        "       loss_vec = model(x, y, loss_reduction='none')   # (B, T)，逐 token\n"
+        "       valid = (y >= 0)          # -1 是不计 loss 的位置，必须先筛掉\n"
+        "       total_nats   += loss_vec[valid].sum().item()\n"
+        "       total_bytes  += token_bytes[y[valid]].sum().item()\n"
+        "  3) was_training 为真就 model.train() 还原\n"
+        "  4) return total_nats / (math.log(2) * max(total_bytes, 1e-9))\n"
+        "\n"
+        "  ★ 两个易错点：\n"
+        "    · 必须用 reduction='none' 拿逐 token loss；用默认的 'mean' 会被 -1 位置污染\n"
+        "    · 查字节数要查 **target**（y）的字节，不是 input（x）的 ——\n"
+        "      模型的工作是「预测这个 token」，按被预测物计费\n"
+        "  验证：uv run pytest tests/test_data.py -k bpb -v\n"
+        "参考实现：git show solution:src/evaluation/metrics.py")
 
 
 # ===========================================================================
@@ -135,8 +141,10 @@ def evaluate_multiple_choice(model, tokenizer, items: list[dict],
     在一批选择题上评测。items 每项形如
         {"question": str, "choices": [str,...], "gold": int}
     """
-    model.eval()
+    # ★ 顺序：先记住原状态，再切 eval()。反过来写的话 eval() 已经把
+    #   training 置成 False，was_training 恒为 False，下面的还原成了死代码。
     was_training = model.training
+    model.eval()
     n = min(len(items), max_examples)
     correct = 0
     for it in items[:n]:

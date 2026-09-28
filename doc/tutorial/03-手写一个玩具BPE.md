@@ -204,7 +204,8 @@ class MiniBPE:
 
 </details>
 
-完整可运行版本在 `scratch/mini_bpe.py`（已经写好了，直接跑）。
+完整实现在 `solution` 分支：`git show solution:scratch/mini_bpe.py`。
+main 上的 `scratch/mini_bpe.py` 是骨架 —— 敲完再跑。
 
 ---
 
@@ -212,7 +213,7 @@ class MiniBPE:
 
 ### 验证 1：训一个迷你 BPE 并看压缩率
 
-`scratch/mini_bpe.py` 已经写好了。跑：
+敲完 `scratch/mini_bpe.py` 之后跑：
 
 > 🔒 **需要先完成**：无 —— 玩具 BPE 是纯 Python 玩具，只用到 `download_tiny_shakespeare`（卷 0）
 >

@@ -323,7 +323,7 @@ def make_dataloader(tokenizer, batch_size, seq_len, split, device="cuda",
 
 ### 验证 1：可视化装箱过程
 
-`scratch/packing_demo.py` 已经写好了。跑：
+敲完 `scratch/packing_demo.py` 的三个装箱函数之后跑：
 
 > 🔒 **需要先完成**：卷 1 第 02-05 章（tokenizer + `list_parquet_files` + best-fit 装箱）
 >
@@ -465,7 +465,7 @@ print('第 0 行前 3 个是不是都是 BOS ?', (x[0,:3] == bos).tolist())
 
 **naive 拼接怎么实现**（最值得做的那个）：
 
-`scratch/naive_dataloader.py` 已经写好了。核心只有 20 行：
+`scratch/naive_dataloader.py` 的核心只有 20 行，敲完再对照：
 
 ```python
 def naive_dataloader(tokenizer, batch_size, seq_len, pool, device="cpu", seed=0):

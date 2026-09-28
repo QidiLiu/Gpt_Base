@@ -254,3 +254,152 @@ def test_split_convention_val_is_last_shard():
     assert len(val) == 1, f"val 应该恰好 1 个 shard，得到 {len(val)}"
     assert val[0] not in train, "val 不能出现在 train 里"
     assert train[-1] < val[0], "val 应该排在 train 之后（文件名排序）"
+
+
+# ===========================================================================
+# 卷1 第 02 章：惰性遍历 parquet（training.train_tokenizer）
+# ===========================================================================
+def test_iter_parquet_text_yields_documents_lazily(tmp_path, monkeypatch):
+    """iter_parquet_text 必须逐 row group 惰性产出文本。
+
+    这是卷1 第 02 章的手抄目标。锁住两件事：
+      1) 产出的内容与 parquet 里的 "text" 列一致（顺序不乱）
+      2) **惰性** —— 调用它不应把整个文件读进内存
+
+    真训练要遍历约 10 亿字符，一次性 .to_pylist() 整个文件会 OOM。
+    所以必须是生成器，且按 row group 逐个读。
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from training import train_tokenizer as tt
+
+    docs = [f"文档 {i} " + "x" * (i + 1) for i in range(6)]
+    path = tmp_path / "shard_00000.parquet"
+    # 切成 3 个 row group，每个 2 篇，用来验证 row group 边界没被搞乱
+    table = pa.table({"text": pa.array(docs[:2])})
+    writer = pq.ParquetWriter(path, table.schema)
+    writer.write_table(table)
+    for chunk in (docs[2:4], docs[4:6]):
+        t = pa.table({"text": pa.array(chunk)})
+        writer.write_table(t)
+    writer.close()
+
+    monkeypatch.setattr(tt, "list_parquet_files", lambda split="train": [str(path)])
+
+    # 1) 是生成器，不是已经算好的 list
+    it = tt.iter_parquet_text("train")
+    assert hasattr(it, "__next__"), "iter_parquet_text 必须是生成器（用 yield，不要 return list）"
+
+    # 2) 逐个产出，顺序与原文一致
+    got = list(it)
+    assert got == docs, f"产出的文本与 parquet 不一致：{got}"
+
+    # 3) 惰性：limit_shards=1 时只处理第一个文件
+    it2 = tt.iter_parquet_text("train", limit_shards=1)
+    assert len(list(it2)) == len(docs)
+
+
+# ===========================================================================
+# 卷1 第 06 章：token_bytes 与 bpb
+# ===========================================================================
+def test_compute_token_bytes_matches_vocab_size():
+    """compute_token_bytes 必须给出「每个 token 多少字节」这张表。
+
+    卷1 第 06 章手抄目标。bpb 换算全靠它：
+        bpb = total_nats / ln(2) / total_bytes
+    """
+    from training.train_tokenizer import compute_token_bytes
+
+    tok = get_tokenizer()
+    n = tok.get_vocab_size()
+    tb = compute_token_bytes(tok)
+
+    assert tb.shape == (n,), f"token_bytes 长度应为词表大小 {n}，实际 {tuple(tb.shape)}"
+    assert not torch.isnan(tb).any(), "token_bytes 出现 NaN"
+    assert (tb >= 0).all(), "token_bytes 不能为负"
+
+    # 普通 token 必须真的查到字节数（全 0 说明循环没跑或 decode_bytes 恒失败）
+    ordinary = [i for i in range(256, n) if i not in set(range(256))]
+    if ordinary:
+        assert tb[ordinary[0]].item() > 0, "普通 token 的字节数不应为 0"
+
+    # ★ 交叉验证：把整张表和逐个查一遍的结果对一遍，
+    #   防止出现「长度对了但内容错位」这种静默错误
+    for tid in (0, n // 2, n - 1):
+        try:
+            expect = len(tok.decode_bytes(tid))
+        except Exception:
+            expect = 0.0
+        assert abs(tb[tid].item() - expect) < 1e-6, (
+            f"token {tid} 的字节数应是 {expect}，实际 {tb[tid].item()}")
+
+
+def test_evaluate_bpb_is_scale_free_and_restores_train_mode():
+    """evaluate_bpb 必须给出与词表无关的 bpb，且不留下 eval 副作用。
+
+    卷1 第 06 章「第 2 块」的手抄目标。两个易错点：
+      · 必须用 loss_reduction='none' 再按 y >= 0 过滤，
+        否则 -1 位置会污染结果
+      · 入口 model.eval()，出口必须还原成原来的 train/eval 状态
+    """
+    from common.config import make_run_config
+    from model.gpt import build_model
+    from evaluation.metrics import evaluate_bpb
+
+    cfg = make_run_config("debug", vocab_size=64)
+    cfg.model.sequence_len, cfg.model.n_embd = 32, 32
+    cfg.model.n_head = cfg.model.n_kv_head = 2
+    cfg.model.head_dim = 16
+    model = build_model(cfg.model, device="cpu")
+
+    tok = get_tokenizer()
+    # token_bytes 用一个常数表即可：这里验的是 bpb 的换算与副作用，不是表本身
+    tb = torch.full((cfg.vocab_size,), 4.0)
+
+    batch = torch.randint(0, cfg.vocab_size, (2, 32))
+    loader = [(batch, batch.clone(), {})]
+
+    model.train()
+    bpb = evaluate_bpb(model, loader, tb, max_batches=1)
+
+    assert model.training, "evaluate_bpb 结束后必须把 model 还原成 train 模式"
+    assert not torch.isnan(torch.tensor(bpb)), f"bpb 是 NaN：{bpb}"
+    assert bpb > 0, f"bpb 应为正数，得到 {bpb}"
+    # 随机初始化的模型约等于均匀分布：bpb ≈ log2(vocab) ≈ 6
+    assert 1.0 < bpb < 20.0, f"bpb 数量级不对：{bpb}"
+
+
+def test_evaluate_bpb_ignores_masked_targets():
+    """targets 里被 mask 掉（-1）的位置，绝不能计入 loss 或字节数。
+
+    这是 evaluate_bpb 最容易写错的一处：若忘了 `valid = y >= 0`，
+    -1 会被当成合法的 token 下标，统计出错误的字节数。
+    """
+    from common.config import make_run_config
+    from model.gpt import build_model
+    from evaluation.metrics import evaluate_bpb
+
+    cfg = make_run_config("debug", vocab_size=64)
+    cfg.model.sequence_len, cfg.model.n_embd = 32, 32
+    cfg.model.n_head = cfg.model.n_kv_head = 2
+    cfg.model.head_dim = 16
+    torch.manual_seed(0)
+    model = build_model(cfg.model, device="cpu")
+    model.eval()
+
+    x = torch.randint(0, cfg.vocab_size, (1, 32))
+    y_full = torch.randint(0, cfg.vocab_size, (1, 32))
+    tb = torch.full((cfg.vocab_size,), 4.0)
+
+    bpb_full = evaluate_bpb(model, [(x, y_full, {})], tb, max_batches=1)
+
+    # 把后半段全部 mask 掉。字节数减半 -> bpb 必须大致翻倍
+    y_half = y_full.clone()
+    y_half[:, 16:] = -1
+    bpb_half = evaluate_bpb(model, [(x, y_half, {})], tb, max_batches=1)
+
+    assert not torch.isnan(torch.tensor(bpb_half)), "mask 之后 bpb 变成 NaN"
+    # 有效 token 减半、总 nats 减半、总字节减半 -> bpb 不变
+    assert abs(bpb_half - bpb_full) < abs(bpb_full) * 0.35, (
+        f"mask 掉一半 target 后 bpb 应基本不变（分子分母同减半），"
+        f"但 {bpb_full:.4f} -> {bpb_half:.4f}。多半是忘了按 y >= 0 过滤。")

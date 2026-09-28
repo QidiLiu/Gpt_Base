@@ -112,6 +112,11 @@ src/
 └── evaluation/   metrics（bpb / 多选 / pass@k）                  → 卷7  📖只读
 ```
 
+> ⚠ **两个例外**：`training/train_tokenizer.py` 的 `iter_parquet_text`（第 02 章）与
+> `compute_token_bytes`（第 06 章）、以及 `evaluation/metrics.py` 的 `evaluate_bpb`
+> （第 06 章）是**卷1 的手抄目标**，虽然文件本身归属卷5/卷7。
+> 判据：`pytest tests/test_data.py -k 'parquet or token_bytes or bpb'`。
+
 ---
 
 ## 教程目录
@@ -211,14 +216,14 @@ src/
 | 脚本 | 依赖 | 状态 | 解锁条件 |
 |---|---|---|---|
 | `scratch/hardware.py` | `common` | ✅ **现在就能跑** | 卷 0 |
-| `scratch/toy_bpe.py` | 纯 Python | ✅ **现在就能跑** | 卷 0（它是卷 2 的材料） |
+| `scratch/toy_bpe.py` | 纯 Python | ✍ **手抄目标** | 敲完 `toy_bpe()` 再跑（第 02 章验证 2） |
 | `scratch/vocab_math.py` | `common.config` | ✅ **现在就能跑** | 卷 0 |
 | `scratch/bpb_uncomparable.py` | 纯 math | ✅ **现在就能跑** | 卷 0（它是卷 1 的材料） |
-| `scratch/mini_bpe.py` | `data.dataset` | 🔒 | 写完 `list_parquet_files` 一行 |
+| `scratch/mini_bpe.py` | 纯 Python + `data.dataset` | ✍ **手抄目标** | 敲完 `MiniBPE` 的 4 个方法（第 03 章） |
 | `scratch/mask_demo.py` | `tokenizer.render_conversation` | 🔒 | 卷1 第 04 章 |
-| `scratch/check_data.py` | `tokenizer` + `dataloader` | 🔒 | 卷1 第 05 章 |
-| `scratch/naive_dataloader.py` | 同上 | 🔒 | 卷1 第 05 章 |
-| `scratch/packing_demo.py` | 同上 | 🔒 | 卷1 第 05 章 |
+| `scratch/check_data.py` | `tokenizer` + `dataloader` | 🔒 | 卷1 第 05 章（只有断言，无可抄算法） |
+| `scratch/naive_dataloader.py` | 同上 | ✍ **手抄目标** | 敲完两个函数再跑（第 05 章消融基线） |
+| `scratch/packing_demo.py` | 同上 | ✍ **手抄目标** | 敲完三个装箱函数再跑（第 05 章） |
 | `scratch/bpb_demo.py` | checkpoint + `dataloader` | 🔒 | 卷1 第 06 章 |
 | `bash script/train_base.sh` | 上面全部 + 模型 + 优化器 | 🔒 | 卷 1-4 全部完成 |
 | `bash script/eval_base.sh` | checkpoint | 🔒 | 至少跑过一次 `train_base` |
@@ -264,7 +269,7 @@ bash script/chat.sh       smoke   # 交互式聊天
 uv run pytest tests/ -v
 ```
 
-51 个测试（卷0 6 个 + 卷1 15 个 + 卷2-3 18 个 + 卷4 12 个）
+55 个测试（卷0 6 个 + 卷1 19 个 + 卷2-3 18 个 + 卷4 12 个）
 专门覆盖「看起来对其实错了」的 bug。你在敲的过程中改坏东西，
 测试会立刻告诉你哪里坏了。几个重点：
 

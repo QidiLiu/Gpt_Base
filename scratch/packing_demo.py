@@ -18,79 +18,59 @@ from data.dataset import list_parquet_files
 # ===========================================================================
 def pack_row_bestfit(buf, capacity):
     """
-    BOS-aligned best-fit（nanochat / 本项目采用）。
+    BOS-aligned best-fit（nanochat / 本项目采用）。★ 本章核心
 
     规则 1：优先选「能完整放下的最长文档」
             —— 长文档最难安排，先处理能减少浪费
     规则 2：都放不下时，裁剪「最短的」填满
             —— 裁最短的，浪费最少
     返回 (这一行用掉的 token 列表, 统计)
-    """
-    row, buf = [], list(buf)
-    cropped, order = 0, []
+
+    ── 你要写的 ──────────────────────────────────────
+    row, buf = [], list(buf)；cropped, order = 0, []
     while buf and len(row) < capacity:
         rem = capacity - len(row)
-        bi, bl = -1, 0
-        for i, d in enumerate(buf):
-            if len(d) <= rem and len(d) > bl:
-                bi, bl = i, len(d)
-        if bi >= 0:
-            d = buf.pop(bi)
-            row.extend(d)
-            order.append((bi, len(d), len(d)))       # (原下标, 原长, 装入长)
-        else:
-            si = min(range(len(buf)), key=lambda i: len(buf[i]))
-            d = buf.pop(si)
-            row.extend(d[:rem])
-            cropped += len(d) - rem
-            order.append((si, len(d), rem))
-            break
-    return row, dict(cropped=cropped, order=order)
+        A) 线性扫 buf，找出「len(d) <= rem 且最长」的那篇，记下它的下标
+        B) 找到了：pop 出来 row.extend(整篇)，记 order += (原下标, 原长, 装入长)
+        C) 一篇都放不下：找**最短**的那篇，pop 出来只塞 d[:rem]，
+           cropped += len(d) - rem，行已满 -> break
+
+    ★ 坑：规则 C 执行后行已经满了，**必须 break**。否则下一轮 rem=0，
+      d[:0] 是空切片，行永远填不满，while 会死循环。
+    ★ 统计里 order 要记 (原下标, 原长, 装入长) 三个值，可视化要用。
+    """
+    raise NotImplementedError(
+        "待实现：pack_row_bestfit —— 见 docstring 的 A/B/C 三步\n"
+        "  验证：uv run python scratch/packing_demo.py\n"
+        "        （实验 C 是手工构造的小例子，能直接看出 best-fit 裁 5 个 token，\n"
+        "          而 first-fit 裁 10 个、裁最长的裁 45 个）\n"
+        "参考实现：git show solution:scratch/packing_demo.py")
 
 
 def pack_row_firstfit(buf, capacity):
-    """first-fit：按 buffer 顺序取第一个能完整放下的（对照组）。"""
-    row, buf = [], list(buf)
-    cropped, order = 0, []
-    while buf and len(row) < capacity:
-        rem = capacity - len(row)
-        bi = next((i for i, d in enumerate(buf) if len(d) <= rem), -1)
-        if bi >= 0:
-            d = buf.pop(bi)
-            row.extend(d)
-            order.append((bi, len(d), len(d)))
-        else:
-            si = min(range(len(buf)), key=lambda i: len(buf[i]))
-            d = buf.pop(si)
-            row.extend(d[:rem])
-            cropped += len(d) - rem
-            order.append((si, len(d), rem))
-            break
-    return row, dict(cropped=cropped, order=order)
+    """first-fit：按 buffer 顺序取**第一个**能完整放下的（对照组）。
+
+    与 best-fit 只差在规则 1：best-fit 选「能放下的最长」，first-fit 选「第一个能放下的」。
+    规则 2 两者相同（都裁最短的）。裁剪量因此会更多。
+    """
+    raise NotImplementedError(
+        "待实现：pack_row_firstfit —— 同 best-fit 的骨架，只把规则 1 的\n"
+        "  「扫一遍找最长的」换成「找到第一个 len(d) <= rem 就停」\n"
+        "  提示：next((i for i, d in enumerate(buf) if len(d) <= rem), -1)\n"
+        "参考实现：git show solution:scratch/packing_demo.py")
 
 
 def pack_row_worstcrop(buf, capacity):
-    """反面对照：规则 2 改成「裁最长的」。浪费必然更多。"""
-    row, buf = [], list(buf)
-    cropped, order = 0, []
-    while buf and len(row) < capacity:
-        rem = capacity - len(row)
-        bi, bl = -1, 0
-        for i, d in enumerate(buf):
-            if len(d) <= rem and len(d) > bl:
-                bi, bl = i, len(d)
-        if bi >= 0:
-            d = buf.pop(bi)
-            row.extend(d)
-            order.append((bi, len(d), len(d)))
-        else:
-            si = max(range(len(buf)), key=lambda i: len(buf[i]))   # 裁最长的！
-            d = buf.pop(si)
-            row.extend(d[:rem])
-            cropped += len(d) - rem
-            order.append((si, len(d), rem))
-            break
-    return row, dict(cropped=cropped, order=order)
+    """反面对照：规则 2 改成「裁最长的」。浪费必然更多。
+
+    与 best-fit 只差在规则 2：把「裁最短的」换成「裁最长的」。
+    这就是教程里「裁最长的会浪费 668%」那个反例。
+    """
+    raise NotImplementedError(
+        "待实现：pack_row_worstcrop —— 同 best-fit 的骨架，只把规则 2 的\n"
+        "  min(...) 换成 max(...)：\n"
+        "  提示：min(range(len(buf)), key=lambda i: len(buf[i]))  ->  max(...)\n"
+        "参考实现：git show solution:scratch/packing_demo.py")
 
 
 PACKERS = {"best-fit": pack_row_bestfit,

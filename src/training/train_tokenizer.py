@@ -1,9 +1,15 @@
 """
-训练 BPE tokenizer（卷1 的第 3 章会手抄这个文件）。
+训练 BPE tokenizer。
 
 流程：
     遍历预训练 shard 的 row group -> 取出原始文本 -> 喂给 rustbpe
     -> 存 tokenizer.pkl -> 顺便算出 token_bytes.pt（bpb 指标要用）
+
+⚠ 本文件虽是 `src/training/`（卷5 通常只读），但其中**两个函数属于卷1 手抄**：
+    iter_parquet_text    卷1 第 02 章「用生成器喂文本」
+    compute_token_bytes  卷1 第 06 章「算 token_bytes」
+  所以它们在 main 分支上是骨架。其余函数（main / report_compression / iter_tiny_text）
+  是纯工程，只读即可。
 
 跑法：
     uv run python -m training.train_tokenizer --vocab-size 16384
@@ -24,53 +30,79 @@ from data.dataset import list_parquet_files, download_tiny_shakespeare, get_base
 from data.tokenizer import BPETokenizer
 
 
+# ===========================================================================
+# ❗ 卷1 第 02 章：惰性遍历 parquet
+# ===========================================================================
 def iter_parquet_text(split="train", limit_shards=None):
     """
     惰性遍历 parquet 里的原始文本，喂给 BPE 训练器。
 
-    为什么用生成器？
+    ── 为什么必须是生成器 ──────────────────────────────
       4 个 shard 约 10 亿字符，不可能全读进内存。
       BPE 训练器只需要「一个接一个的字符串」，生成器正好满足。
       内存占用只等于「BPE 自身的合并表」，与数据量无关。
-    """
-    import pyarrow.parquet as pq
 
-    paths = list_parquet_files(split)
-    if limit_shards:
-        paths = paths[:limit_shards]
-    for path in paths:
-        pf = pq.ParquetFile(path)
-        for rg_idx in range(pf.num_row_groups):
-            rg = pf.read_row_group(rg_idx)
-            yield from rg.column("text").to_pylist()
+    ── 你要写的 ──────────────────────────────────────
+    1) paths = list_parquet_files(split)，再按 limit_shards 截断
+    2) 对每个 path：pq.ParquetFile(path)
+    3) 遍历 pf.num_row_groups，逐个 pf.read_row_group(rg_idx)
+    4) 把该 row group 的 "text" 列转成 python list 并 yield 出去
+       （用 yield from 即可，不要先收集成 list —— 那就退化成全量读入内存了）
+    """
+    raise NotImplementedError(
+        "待实现：iter_parquet_text ——\n"
+        "  import pyarrow.parquet as pq\n"
+        "  paths = list_parquet_files(split)\n"
+        "  if limit_shards: paths = paths[:limit_shards]\n"
+        "  for path in paths:\n"
+        "      pf = pq.ParquetFile(path)\n"
+        "      for rg_idx in range(pf.num_row_groups):\n"
+        "          rg = pf.read_row_group(rg_idx)\n"
+        "          yield from rg.column('text').to_pylist()\n"
+        "\n"
+        "  注意：这里必须逐 row group 惰性产出。一旦先 .to_pylist() 整个文件，\n"
+        "        10 亿字符会一次性进内存，OOM。\n"
+        "  验证：uv run python -m training.train_tokenizer --vocab-size 8192 --shards 1\n"
+        "参考实现：git show solution:src/training/train_tokenizer.py")
 
 
 def iter_tiny_text():
-    """玩具数据：tinyshakespeare 全文（约 1.1 MB）。"""
+    """玩具数据：tinyshakespeare 全文（约 1.1 MB）。🔶 已给"""
     path = download_tiny_shakespeare()
     with open(path, encoding="utf-8") as f:
         yield f.read()
 
 
+# ===========================================================================
+# ❗ 卷1 第 06 章：算 token_bytes
+# ===========================================================================
 def compute_token_bytes(tok: BPETokenizer, device="cpu") -> torch.Tensor:
     """
     对每个 token id 记录它对应多少字节。
 
-    用途：bpb（bits per byte）。
-      普通的 loss 是「每个 token 的 nats」，它依赖词表大小，没法跨模型比较。
-      bpb 是「每个原始字节多少 bits」，与词表无关，可以公平比较。
-      换算：bpb = (loss_nats / ln2) / (该 token 平均覆盖的字节数)
-      所以需要这张表。
+    ── 为什么需要这张表（bpb）────────────────────────────
+      普通的 loss 是「每 token 的 nats」，它依赖词表大小，没法跨模型比较。
+      bpb 是「每原始字节多少 bits」，与词表无关，可以公平比较。
+          bpb = (loss_nats / ln2) / (该 token 平均覆盖的字节数)
+      所以需要「token id -> 字节数」这张表。
+
+    ── 你要写的 ──────────────────────────────────────
+    1) n = tok.get_vocab_size()，建一个长度 n 的 float32 张量（zeros）
+    2) 逐个 token id 用 len(tok.decode_bytes(tid)) 填
+    3) ★ 必须在 tokenizer **最终定下来之后**、用同一个 tok 对象算
+       （训练完再算，中途词表会变）
     """
-    n = tok.get_vocab_size()
-    arr = torch.zeros(n, dtype=torch.float32, device=device)
-    for tid in range(n):
-        try:
-            arr[tid] = len(tok.decode_bytes(tid))
-        except Exception:
-            # 理论上不该有解码不了的 token；特殊 token 也不是 0 字节
-            arr[tid] = 0.0
-    return arr
+    raise NotImplementedError(
+        "待实现：compute_token_bytes ——\n"
+        "  n = tok.get_vocab_size()\n"
+        "  arr = torch.zeros(n, dtype=torch.float32, device=device)\n"
+        "  for tid in range(n):\n"
+        "      try:    arr[tid] = len(tok.decode_bytes(tid))\n"
+        "      except Exception: arr[tid] = 0.0   # 特殊 token 解不出字节，记 0\n"
+        "  return arr\n"
+        "\n"
+        "  验证：uv run python scratch/bpb_demo.py\n"
+        "参考实现：git show solution:src/training/train_tokenizer.py")
 
 
 def report_compression(tok: BPETokenizer):

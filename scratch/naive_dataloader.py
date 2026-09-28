@@ -35,38 +35,60 @@ from data.dataset import list_parquet_files
 def build_token_pool(tokenizer, split="train", pool_tokens=4_000_000,
                      n_row_groups=6):
     """
-    把若干个 row group 的所有文档串成一条 token 长流。
+    把若干个 row group 的所有文档串成一条 token 长流。★ 第 05 章手抄目标
 
     真实训练里这一步是流式的（不可能全读进内存）。
     这里为了做对照实验，先收集固定数量的 token 就够了。
+
+    ── 你要写的 ──────────────────────────────────────
+    1) pool = []，bos = tokenizer.get_bos_token_id()
+    2) 遍历 list_parquet_files(split)，每个文件最多取 n_row_groups 个 row group
+    3) 每篇 text 用 tokenizer.encode(text, prepend=bos) 编码后 pool.extend(...)
+    4) 收集够 pool_tokens 就 return
     """
-    pool = []
-    bos = tokenizer.get_bos_token_id()
-    for path in list_parquet_files(split):
-        pf = pq.ParquetFile(path)
-        for rg_idx in range(min(pf.num_row_groups, n_row_groups)):
-            for text in pf.read_row_group(rg_idx).column("text").to_pylist():
-                pool.extend(tokenizer.encode(text, prepend=bos))
-                if len(pool) >= pool_tokens:
-                    return pool
-    return pool
+    raise NotImplementedError(
+        "待实现：build_token_pool ——\n"
+        "  pool, bos = [], tokenizer.get_bos_token_id()\n"
+        "  for path in list_parquet_files(split):\n"
+        "      pf = pq.ParquetFile(path)\n"
+        "      for rg_idx in range(min(pf.num_row_groups, n_row_groups)):\n"
+        "          for text in pf.read_row_group(rg_idx).column('text').to_pylist():\n"
+        "              pool.extend(tokenizer.encode(text, prepend=bos))\n"
+        "              if len(pool) >= pool_tokens: return pool\n"
+        "  return pool\n"
+        "\n"
+        "参考实现：git show solution:scratch/naive_dataloader.py")
 
 
 def naive_dataloader(tokenizer, batch_size, seq_len, pool, device="cpu", seed=0):
     """
-    产出 (x, y)，形状与 make_dataloader 相同，但窗口会跨文档。
+    产出 (x, y)，形状与 make_dataloader 相同，但窗口会跨文档。★ 第 05 章手抄目标
+
+    和 best-fit 的唯一区别：**没有「每行以 BOS 开头」这个不变量**。
+    窗口是从长流里随机切的，因此经常从某篇文档中间开始 ——
+    这就是本实验要度量的「跨文档污染」。
 
     yields
         x (B, T) 随机切出的窗口
         y (B, T) 右移一位
+
+    ── 你要写的（核心只有 3 行）─────────────────────────
+    1) rng = random.Random(seed)
+    2) 每轮随机取 batch_size 个起点：rng.randrange(0, len(pool) - seq_len - 1)
+    3) x = pool[i : i+seq_len]，y = pool[i+1 : i+1+seq_len]，stack 后 yield
     """
-    rng = random.Random(seed)
-    while True:
-        ix = [rng.randrange(0, len(pool) - seq_len - 1) for _ in range(batch_size)]
-        x = torch.stack([torch.tensor(pool[i:i + seq_len], dtype=torch.long) for i in ix])
-        y = torch.stack([torch.tensor(pool[i + 1:i + 1 + seq_len], dtype=torch.long)
-                         for i in ix])
-        yield x.to(device), y.to(device)
+    raise NotImplementedError(
+        "待实现：naive_dataloader ——\n"
+        "  rng = random.Random(seed)\n"
+        "  while True:\n"
+        "      ix = [rng.randrange(0, len(pool) - seq_len - 1) for _ in range(batch_size)]\n"
+        "      x = torch.stack([torch.tensor(pool[i:i+seq_len], dtype=torch.long) for i in ix])\n"
+        "      y = torch.stack([torch.tensor(pool[i+1:i+1+seq_len], dtype=torch.long) for i in ix])\n"
+        "      yield x.to(device), y.to(device)\n"
+        "\n"
+        "  验证：uv run python scratch/naive_dataloader.py\n"
+        "        （污染率应该接近 1.0，而 best-fit 恒为 0）\n"
+        "参考实现：git show solution:scratch/naive_dataloader.py")
 
 
 # ===========================================================================

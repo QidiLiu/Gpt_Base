@@ -12,11 +12,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 # 章节 -> pytest -k 表达式（多个用逗号或空格分隔的 -k 都行）
 declare -A CHAPTERS=(
   ["00-01"]="tests/test_presets.py -k 'presets'"
-  ["02"]="tests/test_data.py -k 'tokenizer or special or decode_bytes'"
+  ["02"]="tests/test_data.py -k 'tokenizer or special or decode_bytes or parquet'"
   ["03"]="tests/test_data.py -k 'tokenizer or decode_bytes'"
   ["04"]="tests/test_data.py -k 'mask or python_output or truncate or alternation'"
   ["05"]="tests/test_data.py -k 'dataloader or targets_are or bos or padding or bestfit or split'"
-  ["06"]="tests/test_data.py -k 'decode_bytes'"
+  ["06"]="tests/test_data.py -k 'decode_bytes or token_bytes or bpb'"
   ["07"]="tests/test_core.py -k 'uniform or loss_reduction or ignore or causal'"
   ["08"]="tests/test_core.py -k 'uniform'"
   ["09"]="tests/test_core.py -k 'rope'"

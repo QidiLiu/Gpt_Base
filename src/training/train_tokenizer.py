@@ -16,11 +16,8 @@ import time
 
 import torch
 
-from common import (
-    get_tokenizer_dir, log0, human_time, autodetect_device_type,
-    get_base_dir, COMPUTE_DTYPE,
-)
-from data.dataset import list_parquet_files, download_tiny_shakespeare, get_base_dir_shakespeare
+from common import get_tokenizer_dir, log0, human_time, autodetect_device_type
+from data.dataset import list_parquet_files, download_tiny_shakespeare
 from data.tokenizer import BPETokenizer
 
 

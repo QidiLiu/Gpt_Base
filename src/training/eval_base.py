@@ -10,7 +10,6 @@ import os
 import json
 import argparse
 
-import torch
 
 from common import (
     autodetect_device_type, compute_init, log0, get_runs_dir, load_latest,

@@ -17,7 +17,7 @@ from common import (
 )
 from data.tokenizer import get_tokenizer
 from data.tasks import MMLU, ARC, GSM8K
-from evaluation.metrics import score_choices, compute_pass_at_k
+from evaluation.metrics import compute_pass_at_k
 from inference.engine import Engine, KVCache
 from common.checkpoint import load_checkpoint, find_latest
 from model.gpt import build_model

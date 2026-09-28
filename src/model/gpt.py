@@ -8,9 +8,7 @@ GPT 主干：把 layers.py 的零件组装起来，加上 nanochat 的残差流 
   · logit softcap
 """
 
-import json
 import math
-from dataclasses import asdict
 
 import torch
 import torch.nn as nn

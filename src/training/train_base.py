@@ -9,8 +9,6 @@
 """
 
 import os
-import gc
-import json
 import time
 import math
 import argparse
@@ -24,9 +22,17 @@ import logging
 logging.getLogger("torch._inductor").setLevel(logging.ERROR)
 
 from common import (
-    autodetect_device_type, compute_init, compute_cleanup, log0, logger,
-    get_runs_dir, get_peak_flops, synchronize, get_max_memory, human_time,
-    COMPUTE_DTYPE, COMPUTE_DTYPE_REASON,
+    autodetect_device_type,
+    compute_init,
+    compute_cleanup,
+    log0,
+    get_runs_dir,
+    get_peak_flops,
+    synchronize,
+    get_max_memory,
+    human_time,
+    COMPUTE_DTYPE,
+    COMPUTE_DTYPE_REASON,
 )
 from common.config import make_run_config, resolve_scaling
 from data.tokenizer import get_tokenizer, get_token_bytes

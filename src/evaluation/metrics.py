@@ -41,8 +41,10 @@ def evaluate_bpb(model, loader, token_bytes, max_batches: int) -> float:
 
     参考量级：随机字节约 8 bpb，自然英语约 1.0-1.5，训练良好的小模型约 0.8-1.0。
     """
-    model.eval()
+    # ★ 顺序：先记住原状态，再切 eval()。反过来写的话 eval() 已经把
+    #   training 置成 False，was_training 恒为 False，下面的还原成了死代码。
     was_training = model.training
+    model.eval()
     total_nats, total_bytes = 0.0, 0.0
 
     for i, batch in enumerate(loader):
@@ -135,8 +137,10 @@ def evaluate_multiple_choice(model, tokenizer, items: list[dict],
     在一批选择题上评测。items 每项形如
         {"question": str, "choices": [str,...], "gold": int}
     """
-    model.eval()
+    # ★ 顺序：先记住原状态，再切 eval()。反过来写的话 eval() 已经把
+    #   training 置成 False，was_training 恒为 False，下面的还原成了死代码。
     was_training = model.training
+    model.eval()
     n = min(len(items), max_examples)
     correct = 0
     for it in items[:n]:

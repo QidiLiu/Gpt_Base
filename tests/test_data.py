@@ -152,12 +152,9 @@ def test_role_alternation_asserted():
         {"role": "user", "content": "b"},
         {"role": "assistant", "content": "c"},
     ]}
-    try:
+    import pytest
+    with pytest.raises(AssertionError, match="交替规则"):
         tok.render_conversation(bad)
-        raise AssertionError("连续两个 user 消息应该被 assert 拦住")
-    except AssertionError as e:
-        if "should be" not in str(e):
-            raise
 
 
 # ===========================================================================

@@ -7,7 +7,7 @@
 #   bash script/train_sft.sh smoke --num-iterations 500
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-MODE="$1"; shift || true
+MODE="${1:-smoke}"; [ $# -gt 0 ] && shift || true
 
 [ -f "runs/base_checkpoints/$TAG/model_"*.pt ] 2>/dev/null \
   || die "没有找到基座 $TAG。先跑：bash script/train_base.sh $MODE"

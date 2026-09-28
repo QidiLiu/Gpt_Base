@@ -7,7 +7,7 @@
 #   bash script/eval_sft.sh smoke --gsm8k-examples 100
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-MODE="$1"; shift || true
+MODE="${1:-smoke}"; [ $# -gt 0 ] && shift || true
 
 [ -f "runs/sft_checkpoints/$TAG/model_"*.pt ] 2>/dev/null \
   || die "没有找到 SFT 模型 $TAG。先跑：bash script/train_sft.sh $MODE"

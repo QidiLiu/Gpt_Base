@@ -7,7 +7,7 @@
 #   bash script/eval_base.sh smoke --eval-tokens 1048576    # 更精确的 bpb
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-MODE="$1"; shift || true
+MODE="${1:-smoke}"; [ $# -gt 0 ] && shift || true
 
 [ -f "runs/base_checkpoints/$TAG/model_"*.pt ] 2>/dev/null \
   || die "没有找到 $TAG 的 checkpoint。先跑：bash script/train_base.sh $MODE"

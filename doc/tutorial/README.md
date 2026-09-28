@@ -25,7 +25,7 @@
 ```bash
 cd ~/Dev/Gpt_Base
 uv sync                      # 建 .venv，torch 走 cu132
-uv run pytest tests/ -q      # 18 个测试全绿说明环境没问题
+uv run pytest tests/ -q      # 166 个测试全绿说明环境没问题
 bash script/train_base.sh smoke
 ```
 
@@ -85,36 +85,36 @@ src/
 ### 卷 2 · 模型：tensor 怎么变成 logits
 | 章 | 标题 | 核心问题 |
 |---|---|---|
-| [07](07-先跑通一个最小GPT.md) | 先跑通一个最小 GPT | 最小可用的 GPT 长什么样 |
-| [08](08-RMSNorm.md) | RMSNorm | 为什么可以砍掉偏置和减均值 |
-| [09](09-RoPE旋转位置编码.md) | **RoPE 旋转位置编码** | 位置信息怎么变成旋转 |
-| [10](10-注意力三步曲.md) | 注意力三步曲 | 逐行读懂 self-attention |
-| [11](11-为什么用SDPA和FlashAttention.md) | SDPA 与 FlashAttention | 为什么快（IO bound 视角） |
-| [12](12-QKNorm与GQA.md) | QK Norm 与 GQA | 稳定训练 + 省 KV cache |
-| [13](13-MLP激活函数.md) | MLP 与激活函数 | ReLU 平方 vs GELU |
-| [14](14-残差流与Pre-LN.md) | 残差流与 Pre-LN | 梯度为什么要走旁路 |
-| [15](15-权重绑定与logit-softcap.md) | 权重绑定与 logit softcap | 省参数 vs 防溢出 |
+| 07 | 先跑通一个最小 GPT | 最小可用的 GPT 长什么样 |
+| 08 | RMSNorm | 为什么可以砍掉偏置和减均值 |
+| 09 | **RoPE 旋转位置编码** | 位置信息怎么变成旋转 |
+| 10 | 注意力三步曲 | 逐行读懂 self-attention |
+| 11 | SDPA 与 FlashAttention | 为什么快（IO bound 视角） |
+| 12 | QK Norm 与 GQA | 稳定训练 + 省 KV cache |
+| 13 | MLP 与激活函数 | ReLU 平方 vs GELU |
+| 14 | 残差流与 Pre-LN | 梯度为什么要走旁路 |
+| 15 | 权重绑定与 logit softcap | 省参数 vs 防溢出 |
 
 ### 卷 3 · nanochat 的架构 trick
 | 章 | 标题 | 核心问题 |
 |---|---|---|
-| [16](16-meta-device三步建模型.md) | **meta device 三步建模型** | 一个真实的性能陷阱 |
-| [17](17-逐层标量resid与x0.md) | resid_lambdas 与 x0_lambdas | 逐层缩放残差流 |
-| [18](18-Value-Embeddings与门控.md) | Value Embeddings 与门控 | ResFormer 做了什么 |
-| [19](19-Smear与Backout.md) | Smear 与 Backout | 两个「便宜的小把戏」 |
-| [20](20-滑动窗口注意力.md) | 滑动窗口注意力 | 原理，以及一个性能悬崖 |
+| 16 | **meta device 三步建模型** | 一个真实的性能陷阱 |
+| 17 | resid_lambdas 与 x0_lambdas | 逐层缩放残差流 |
+| 18 | Value Embeddings 与门控 | ResFormer 做了什么 |
+| 19 | Smear 与 Backout | 两个「便宜的小把戏」 |
+| 20 | 滑动窗口注意力 | 原理，以及一个性能悬崖 |
 
 ### 卷 4 · 优化器（最硬核的一卷）
 | 章 | 标题 | 核心问题 |
 |---|---|---|
-| [21](21-从SGD到AdamW.md) | 从 SGD 到 AdamW | 每个超参在干什么 |
-| [22](22-为什么矩阵参数适合Muon.md) | 为什么矩阵参数适合 Muon | SVD 视角 |
-| [23](23-手写Newton-Schulz正交化.md) | **手写 Newton-Schulz 正交化** | 20 行代码，5 步变成正交 |
-| [24](24-Polar-Express.md) | Polar Express | 更好的每步系数 |
-| [25](25-三个进阶修正.md) | MuonEq / Muon+ / NorMuon | 三个修正各修什么 |
-| [26](26-谨慎权重衰减.md) | 谨慎权重衰减 | 只在「往 0 拉」时衰减 |
-| [27](27-混合优化器与参数分组.md) | 混合优化器与参数分组 | 谁该用 Muon，谁该用 AdamW |
-| [28](28-compile融合与0D-tensor技巧.md) | torch.compile 融合与 0-D tensor 技巧 | 怎么让编译不被超参变化打断 |
+| 21 | 从 SGD 到 AdamW | 每个超参在干什么 |
+| 22 | 为什么矩阵参数适合 Muon | SVD 视角 |
+| 23 | **手写 Newton-Schulz 正交化** | 20 行代码，5 步变成正交 |
+| 24 | Polar Express | 更好的每步系数 |
+| 25 | MuonEq / Muon+ / NorMuon | 三个修正各修什么 |
+| 26 | 谨慎权重衰减 | 只在「往 0 拉」时衰减 |
+| 27 | 混合优化器与参数分组 | 谁该用 Muon，谁该用 AdamW |
+| 28 | torch.compile 融合与 0-D tensor 技巧 | 怎么让编译不被超参变化打断 |
 
 ### 卷 5-8 · 训练循环、分布式、对齐、收尾
 *（第二批交付：代码已在 `src/` 中，教程随第二批补上）*
@@ -158,8 +158,8 @@ bash script/chat.sh       smoke   # 交互式聊天
 
 ## 卡住了怎么办
 
-1. **跑测试**：`uv run pytest tests/ -q`。18 个测试覆盖了形状、因果性、
+1. **跑测试**：`uv run pytest tests/ -q`。166 个测试覆盖了形状、因果性、
    RoPE、KV cache、优化器等最容易出错的地方，挂了就说明你的改动引入了 bug。
 2. **看注释**：本项目的代码注释密度很高，尤其是「为什么这么写」的部分，
    基本每个非显然的决定都有解释。
-3. **看排错手册**：[第 43 章](43-全流程与排错.md)（第二批交付）。
+3. **看排错手册**：第 43 章（第二批交付，尚未写）。

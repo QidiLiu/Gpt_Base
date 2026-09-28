@@ -146,6 +146,8 @@ def test_chapter_suites_still_have_enough_cases():
         "test_metrics.py": 11,         # 卷7 只读代码护栏
         "test_checkpoint.py": 15,      # 卷5 只读代码护栏
         "test_dataloader_resume.py": 10,  # 卷1 第05章（精确续训）
+        "test_engine.py": 48,        # 卷7 推理引擎（只读代码护栏）
+        "test_tasks.py": 27,          # 卷7 任务与题库（只读代码护栏）
     }
     for name, minimum in expected.items():
         path = TESTS / name

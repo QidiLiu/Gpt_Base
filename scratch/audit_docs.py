@@ -30,7 +30,8 @@ def note(ok, where, msg):
 CHAPTER_TESTS = {"test_core.py": 18, "test_data.py": 19,
                  "test_presets.py": 6, "test_optim.py": 12,
                  "test_metrics.py": 11, "test_checkpoint.py": 15,
-                 "test_dataloader_resume.py": 10}
+                 "test_dataloader_resume.py": 10,
+                 "test_engine.py": 48, "test_tasks.py": 27}
 SOUNDNESS = "test_judging_soundness.py"
 
 

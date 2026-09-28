@@ -11,6 +11,8 @@ Checkpoint 的存与取。
 import os
 import re
 import json
+import math
+
 import torch
 
 from common import log0
@@ -22,6 +24,25 @@ def _model_path(ckpt_dir: str, step: int) -> str:
 
 def _meta_path(ckpt_dir: str, step: int) -> str:
     return os.path.join(ckpt_dir, f"meta_{step:06d}.json")
+
+
+def _json_safe(obj):
+    """把 meta 里的非有限浮点（inf / nan）换成 None。
+
+    为什么要这一步：`best_val_bpb` 在「还没验证过」时是 float('inf')。
+    json.dump 默认会写成 `Infinity` —— 那是**非标准 JSON**，
+    Python 自己读得回来，但 jq 和其它语言的解析器会直接报错。
+    而这个文件的卖点正是「存成 JSON 可以直接 cat 出来看」。
+
+    Python 把 null 读回 None，调用方按 None 判断「还没有值」即可。
+    """
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    return obj
 
 
 def save_checkpoint(ckpt_dir: str, step: int, model_state: dict,
@@ -38,7 +59,8 @@ def save_checkpoint(ckpt_dir: str, step: int, model_state: dict,
     torch.save(model_state, mp + ".tmp")
     os.replace(mp + ".tmp", mp)
     with open(_meta_path(ckpt_dir, step), "w", encoding="utf-8") as f:
-        json.dump(meta, f, indent=2, default=str)
+        # allow_nan=False：万一还有漏网的非有限值，宁可报错也不写脏 JSON
+        json.dump(_json_safe(meta), f, indent=2, default=str, allow_nan=False)
     log0(f"  已存档 step={step} -> {mp}")
 
 

@@ -207,12 +207,36 @@ def main():
     tag = cfg.train.model_tag or f"d{cfg.model.n_layer}"
     ckpt_dir = os.path.join(get_runs_dir(), "base_checkpoints", tag)
     start_step = 0
+    # 续训要恢复的三样东西。默认给空/初始值，由下面的续训块覆盖。
+    resume_dl_state = None
+    best_bpb = float("inf")
+    history = []
     if os.path.isdir(ckpt_dir) and not args.no_resume:
         last = find_latest(ckpt_dir)
         if last is not None:
             log0(f"发现已有存档 step={last}，自动续训"
                  f"（想从头跑请加 --no-resume）")
             model.load_state_dict(load_checkpoint(ckpt_dir, last, device, "model"))
+            # ★ 光恢复权重是不够的。meta 里另外三样也必须读回来，
+            #   否则「续训」名不副实：
+            #     dataloader_state  数据流位置。不恢复 -> 从头重放已训过的数据，
+            #                       而 make_dataloader 的 resume_state 参数
+            #                       （dataloader.py 里认真实现了 pq_idx/rg_idx/epoch）
+            #                       就永远没有调用方。
+            #     best_val_bpb      历史最好指标。不恢复 -> 重置为 inf，
+            #                       「历史最好」只统计续训之后，还会把错误值写回新存档。
+            #     history           训练曲线。不恢复 -> 曲线图只剩续训之后那一段。
+            # 注意：优化器状态是刻意不入 checkpoint 的（见 optim/muon.py 的说明），
+            #       续训会丢动量、头几十步有抖动，那是本项目有意的简化，不在这里处理。
+            meta = load_checkpoint(ckpt_dir, last, "cpu", "meta")
+            resume_dl_state = meta.get("dataloader_state")
+            # best_val_bpb 存盘时若还是 inf 会被写成 JSON null（见
+            # checkpoint._json_safe），这里把 None 还原成 inf。
+            _bpb = meta.get("best_val_bpb")
+            best_bpb = float("inf") if _bpb is None else float(_bpb)
+            history = meta.get("history", [])
+            log0(f"  已恢复：dataloader_state={resume_dl_state} | "
+                 f"best_val_bpb={best_bpb} | history {len(history)} 条")
             start_step = last + 1
     elif args.no_resume:
         log0("--no-resume：从头开始训练")
@@ -227,8 +251,11 @@ def main():
 
     # ---- 4) 数据 ----
     log0("── 数据 " + "─" * 58)
+    # resume_state 传进去，dataloader 才会从存档里的位置继续，
+    # 而不是把前 start_step 步的数据重喂一遍。
     train_loader = make_dataloader(tokenizer, cfg.train.device_batch_size,
-                                   cfg.model.sequence_len, "train", device)
+                                   cfg.model.sequence_len, "train", device,
+                                   resume_state=resume_dl_state)
     token_bytes = get_token_bytes(device)
     x, y, dl_state = next(train_loader)
     log0(f"  device_batch_size={cfg.train.device_batch_size}  seq_len={cfg.model.sequence_len}")
@@ -246,8 +273,8 @@ def main():
 
     # ---- 6) 训练循环 ----
     model.train()
-    ema, smooth, best_bpb, total_time = 0.9, 0.0, float("inf"), 0.0
-    history = []
+    # best_bpb 与 history 已在上面的续训块里初始化（续训时会从 meta 恢复）
+    ema, smooth, total_time = 0.9, 0.0, 0.0
     t_start = time.time()
     log0("── 训练 " + "─" * 58)
 

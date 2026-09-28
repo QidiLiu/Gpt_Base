@@ -13,21 +13,25 @@ SFT（监督微调）：把预训练模型变成会对话的模型。
 """
 
 import os
-import gc
 import time
 import argparse
 
 import torch
 
 from common import (
-    autodetect_device_type, compute_init, compute_cleanup, log0,
-    get_runs_dir, get_peak_flops, synchronize, human_time,
-    save_checkpoint, find_latest, load_latest, COMPUTE_DTYPE,
+    autodetect_device_type,
+    compute_init,
+    compute_cleanup,
+    log0,
+    get_runs_dir,
+    synchronize,
+    human_time,
+    save_checkpoint,
+    load_latest,
 )
-from data.tokenizer import get_tokenizer, get_token_bytes
+from data.tokenizer import get_tokenizer
 from data.tasks import default_sft_mixture, default_sft_validation
 from optim.muon import setup_optimizer
-from evaluation.metrics import evaluate_bpb
 
 
 def parse_args():

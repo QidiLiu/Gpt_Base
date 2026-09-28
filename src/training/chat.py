@@ -14,7 +14,6 @@
 """
 
 import argparse
-import sys
 
 from common import autodetect_device_type, compute_init, log0, get_runs_dir
 from inference.engine import Engine

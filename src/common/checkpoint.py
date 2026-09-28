@@ -102,7 +102,6 @@ def load_latest(run_root: str, tag: str, device):
     调用方可以用它重建出完全一样的模型。
     """
     from common.config import ModelConfig
-    from model.gpt import GPT
     from data.tokenizer import get_tokenizer
 
     ckpt_dir = os.path.join(run_root, "base_checkpoints", tag)

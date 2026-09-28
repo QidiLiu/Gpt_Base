@@ -8,7 +8,7 @@
 #   bash script/train_base.sh smoke --all-tricks --muon-advanced   # 透传消融开关
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-MODE="$1"; shift || true
+MODE="${1:-smoke}"; [ $# -gt 0 ] && shift || true
 EXTRA_ARGS=("$@")
 
 say "档位 $MODE  (tag=$TAG, shards=$SHARDS, vocab=$VOCAB)"

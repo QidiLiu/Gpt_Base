@@ -237,6 +237,41 @@ def test_no_hardcoded_foreign_home_paths():
     )
 
 
+def test_entry_scripts_have_a_working_default_mode():
+    """入口脚本必须真的支持「不传参数」——它们的注释都写着「默认 smoke」。
+
+    真实事故：5 个脚本都写 `MODE="$1"; shift || true`，而 _common.sh 开了
+    `set -euo pipefail`，无参数调用直接 `unbound variable` 退出。
+    _common.sh 里的 `MODE="${1:-smoke}"` 默认值被空串覆盖掉了。
+    """
+    scripts = sorted(REPO.glob("script/*.sh"))
+    entries = [p for p in scripts if p.name != "_common.sh"]
+    assert len(entries) >= 5, f"只找到 {len(entries)} 个入口脚本"
+
+    problems = []
+    for p in entries:
+        lines = p.read_text(encoding="utf-8").splitlines()
+        mode_lines = [(i, l) for i, l in enumerate(lines, 1)
+                      if re.match(r'\s*MODE=', l)]
+        if not mode_lines:
+            continue                      # 不接管 MODE 的脚本跳过
+        for i, line in mode_lines:
+            if "${1:-" in line:
+                continue                  # 有默认值，OK
+            if line.startswith("MODE=\"$1\""):
+                problems.append(
+                    f"{p.name}:{i} 用了裸 $1，无参数调用会 unbound variable；"
+                    f'应写成 MODE="${{1:-smoke}}"')
+            elif "MODE=" in line and "$1" in line:
+                problems.append(
+                    f"{p.name}:{i} 读 $1 但没有默认值：{line.strip()!r}")
+
+    assert not problems, (
+        "入口脚本的「默认档位」是坏的（每个脚本的注释都承诺支持无参数调用）：\n  "
+        + "\n  ".join(problems)
+    )
+
+
 def test_answer_holding_scripts_are_not_pre_solved():
     """手抄靶子脚本不许在 main 上是完整答案。
 

@@ -12,7 +12,7 @@
 #   /exit    退出
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-MODE="$1"; shift || true
+MODE="${1:-smoke}"; [ $# -gt 0 ] && shift || true
 
 [ -f "runs/base_checkpoints/$TAG/model_"*.pt ] 2>/dev/null \
   || die "没有找到模型 $TAG。先跑：bash script/train_base.sh $MODE"

@@ -24,7 +24,8 @@ def note(ok, where, msg):
 # ── 1. 测试数量 ──────────────────────────────────────────────
 # test_judging_soundness.py 是判据自检（不测手抄目标），不计入章节判据。
 CHAPTER_TESTS = {"test_core.py": 18, "test_data.py": 19,
-                 "test_presets.py": 6, "test_optim.py": 12}
+                 "test_presets.py": 6, "test_optim.py": 12,
+                 "test_metrics.py": 11}
 SOUNDNESS = "test_judging_soundness.py"
 
 counts = {}

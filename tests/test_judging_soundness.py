@@ -134,6 +134,7 @@ def test_chapter_suites_still_have_enough_cases():
         "test_data.py": 19,      # 卷1
         "test_core.py": 18,      # 卷2-3
         "test_optim.py": 12,     # 卷4
+        "test_metrics.py": 11,   # 卷7 只读代码的回归护栏
     }
     for name, minimum in expected.items():
         path = TESTS / name

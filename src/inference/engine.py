@@ -154,14 +154,24 @@ def safe_eval_math(expr: str, max_seconds: int = 2):
     """
     极简的「计算器工具」：只允许纯算术表达式和 str.count()。
 
-    安全措施（三层）：
-      1. 字符白名单 —— 只放行数字、运算符、括号、字母（给 str 用）
+    安全措施（四道）：
+      1. 字符白名单 —— 纯算术只放行数字与 `*+-/.()`；
+         带字母的分支另有一套白名单（字母/数字/引号/括号/点/下划线/空格）
       2. 危险词黑名单 —— __ / import / eval / open / getattr ...
-      3. signal.SIGALRM 超时 —— 防止 `9**9**9` 之类把 CPU 卡死
-    4. __builtins__ 清空 —— eval 里拿不到任何内置函数
+      3. __builtins__ 清空 —— eval 的 globals 为空，拿不到任何内置函数。
+         光靠黑名单挡不住 `print` / `len` 这类**本身不算危险词**的内置函数，
+         是这一条兜住的
+      4. signal.SIGALRM 超时 —— 兜底，防止慢表达式把 CPU 卡死
 
-    这不是一个安全的沙箱（真正的沙箱要隔离进程 + seccomp），
-    只够在本地玩具模型上用。教程卷7 会说明这个区别。
+    关于 `9**9**9`：它其实是被第 1 条里的 `**` 检查直接拒掉的
+    （`if "**" in expr: return None`），**不是**靠超时。
+    超时只是最后一道保险 —— 例如超长表达式的正常求值。
+
+    两条已知限制：
+      · signal.SIGALRM 只在**主线程**可用。将来若把生成放进 DataLoader
+        worker 或后台线程，`signal.signal()` 会抛 ValueError。
+      · 这不是安全沙箱（真正的沙箱要隔离进程 + seccomp / seccomp-bpf），
+        只够在本地玩具模型上用。教程卷7 会说明这个区别。
     """
     import signal
 

@@ -141,25 +141,33 @@ def _collected(path):
 
 
 def test_chapter_suites_still_have_enough_cases():
-    """每个卷的判据文件不能被掏空 —— 判据变少 = 保护变弱，且不易察觉。"""
-    expected = {
+    """每个卷的判据文件不能被掏空 —— 判据变少 = 保护变弱，且不易察觉。
+
+    ⚠ 这里刻意用 `>=` 而不是 `==`：
+      - 旧版用精确相等，于是「新增一个合法测试」会让判据失败 ——
+        这会逼着维护者把新测试删掉才能通过，是反的。
+      - 但只用 `>=` 会漏掉「用例被误删」。所以本测试防的是**掏空**
+        （数量暴跌），精确数字的核对交给 scratch/audit_docs.py
+        （它比对 CHAPTER_TESTS 字典，并在不符时报错退出）。
+    """
+    minimum = {
         "test_presets.py": 6,          # 卷0（只读，应全绿）
         "test_data.py": 19,            # 卷1
-        "test_core.py": 18,            # 卷2-3
-        "test_optim.py": 12,           # 卷4
+        "test_core.py": 25,            # 卷2-3
+        "test_optim.py": 14,           # 卷4
         "test_metrics.py": 11,         # 卷7 只读代码护栏
         "test_checkpoint.py": 15,      # 卷5 只读代码护栏
         "test_dataloader_resume.py": 10,  # 卷1 第05章（精确续训）
-        "test_engine.py": 48,        # 卷7 推理引擎（只读代码护栏）
-        "test_tasks.py": 27,          # 卷7 任务与题库（只读代码护栏）
+        "test_engine.py": 50,          # 卷7 推理引擎（只读代码护栏）
+        "test_tasks.py": 27,           # 卷7 任务与题库（只读代码护栏）
     }
-    for name, minimum in expected.items():
+    for name, floor in minimum.items():
         path = TESTS / name
         assert path.exists(), f"判据文件不见了：{path}"
         n = _collected(path)
-        assert n == minimum, (
-            f"{name} 收集到 {n} 个用例，应为 {minimum}。"
-            f"判据被删/被加会让 progress.sh 和文档里的数字失真。"
+        assert n >= floor, (
+            f"{name} 只收集到 {n} 个用例，下限是 {floor} —— "
+            f"判据被掏空了？精确数字请跑 scratch/audit_docs.py 核对。"
         )
 
 
@@ -167,19 +175,37 @@ def test_every_chapter_in_progress_sh_has_a_real_selector():
     """progress.sh 里每个章节的 -k 表达式，必须真的能选中至少一个用例。
 
     防止出现「判据表达式写错 -> 选中 0 个 -> 永远『未完成』或误判通过」。
+
+    ★ 与旧版的区别：旧版只检查「引用的测试文件存在」，docstring 声称的
+      「真的能选中至少一个用例」**从未实现** —— 表达式写成
+      `-k '不存在的关键字'` 照样通过。现在真的跑一次 `pytest --collect-only -k`，
+      选中 0 个就报错。
     """
     script = (REPO / "script" / "progress.sh").read_text(encoding="utf-8")
     assert "-k '" in script, "progress.sh 看起来没有章节判据了"
 
     import re
+    import subprocess
+    import sys
     pairs = re.findall(r'\["([\d\-]+)"\]="([^"]+)"', script)
     assert len(pairs) >= 20, f"progress.sh 只解析到 {len(pairs)} 个章节（应 >= 20）"
 
+    empty = []
     for chapter, expr in pairs:
         files = re.findall(r"(tests/test_\w+\.py)", expr)
         assert files, f"第 {chapter} 章的判据没写测试文件：{expr}"
         for f in files:
             assert (REPO / f).exists(), f"第 {chapter} 章引用了不存在的 {f}"
+        # 真的跑一次 --collect-only -k，确认能选中至少 1 个用例
+        r = subprocess.run(
+            [sys.executable, "-m", "pytest", *files, "-k", expr, "--collect-only", "-q"],
+            cwd=REPO, capture_output=True, text=True, timeout=300)
+        m = re.search(r"(\d+) tests? collected|no tests ran", r.stdout)
+        if not m or int(m.group(1)) == 0:
+            empty.append((chapter, expr))
+    assert not empty, (
+        "这些章节的 -k 表达式选中 0 个用例（拼错了关键字？）：\n  "
+        + "\n  ".join(f"第 {c} 章: {e}" for c, e in empty))
 
 
 # ===========================================================================

@@ -64,7 +64,7 @@ SPECIAL_TOKENS = [
 **为什么要强制注入而不是让模型自己「猜」结果？**
 因为小模型算数很不可靠。工具调用的价值就在于**把计算外包给可靠的外部程序**。
 这也解释了为什么 `python_output` 段的 mask 是 0 ——
-那不是模型产生的，训练时不该让模型学去猜结果（第 05 章细讲）。
+那不是模型产生的，训练时不该让模型学去猜结果（本章的 mask 表已列出）。
 
 ---
 
@@ -421,7 +421,11 @@ cp src/data/tokenizer.py scratch/tokenizer.py.bak
 sed -i 's/add(out_s, 0); add(vids, 0); add(out_e, 0)/add(out_s, 1); add(vids, 1); add(out_e, 1)/' src/data/tokenizer.py
 
 bash script/train_sft.sh smoke --num-iterations 300
-uv run python -m training.chat -m smoke -p "What is 12 * 7?" -m 64
+# ⚠ --mode 是档位，-m 是 --max-tokens。别写成 `-m smoke`（那是 int 参数，会报错）
+uv run python -m training.chat --mode smoke -p "What is 12 * 7?" -m 64
+
+# ⚠ 一定要恢复，否则 render_conversation 会被永久改掉
+cp scratch/tokenizer.py.bak src/data/tokenizer.py
 ```
 
 **观察**：模型是「先编一个答案再调工具」还是「先调工具再回答」？

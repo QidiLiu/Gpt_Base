@@ -241,6 +241,23 @@ class CausalSelfAttention(nn.Module):
         else:
             kc, vc = kv_cache.get_layer(self.layer_idx)
             y = attend_with_kvcache(q, kc, vc, k, v, kv_cache, window)
+            # ★★ 推进 KV cache 的写指针 —— 整份实现里最容易漏的一步。
+            #
+            # attend_with_kvcache 只**读** cache_seqlens 来定位写入位置，
+            # 它自己不推进。推进必须在这里做，而且**只能在最后一层做一次**。
+            #
+            # 为什么必须是最后一层？
+            #   每一层都要把本层的 k/v 写到 cache 的同一个位置（pos 由
+            #   cache_seqlens 决定，所有层共享）。如果每层都 advance，
+            #   n_layer 层就会推进 n_layer 次，写指针直接跑飞，而且各层
+            #   写到不同位置 —— attention 读到的是别的层的 k/v。
+            #   只有最后一层 advance 一次，才能保证「所有层写完，指针恰好前进 T」。
+            #
+            # 漏了这一步会怎样？
+            #   cache_seqlens 恒为 0 → 每次 decode 都写到位置 0，
+            #   有效长度 S 恒等于 1 → 模型永远只看得见自己那一个 token。
+            #   症状是「生成出来像胡言乱语，但没有任何报错」——
+            #   最难查的一类 bug。验证：uv run pytest -k kv_cache_prefill -v
             if self.layer_idx == kv_cache.n_layers - 1:
                 kv_cache.advance(T)
 

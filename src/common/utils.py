@@ -283,7 +283,7 @@ def download_file(url: str, dest: str, desc: str = "", max_retries: int = 5) -> 
     if parent:
         os.makedirs(parent, exist_ok=True)
 
-    tmp = dest + f".tmp"
+    tmp = dest + ".tmp"
     for attempt in range(1, max_retries + 1):
         try:
             with requests.get(url, stream=True, timeout=60) as r:

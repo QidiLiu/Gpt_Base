@@ -122,24 +122,28 @@ def test_resume_state_keys_are_complete(shard, fake_files):
         f"state 字段不全：{state}")
 
 
-def test_batches_are_sliced_to_tokenizer_batch_size(tmp_path, fake_files):
-    """一批的条数不应超过 tokenizer_batch_size。"""
+def test_batches_are_sliced_to_tokenizer_batch_size(tmp_path, monkeypatch):
+    """一批的条数不应超过 tokenizer_batch_size。
+
+    ⚠ 必须用 monkeypatch 而不是 `mod.list_parquet_files = ...` 直接赋值：
+      直接赋值会**永久**改掉模块属性，fixture 结束时不会还原，
+      污染同一 session 里后续的所有测试（曾经真的发生过）。
+    """
     p = _make_shard(tmp_path / "shard_00000.parquet", n_row_groups=3,
                     rows_per_group=10, tag="S")
     from data import dataloader as D
-    import data.dataloader as mod
-    mod.list_parquet_files = lambda split="train": [p]
+    monkeypatch.setattr(D, "list_parquet_files", lambda split="train": [p])
     it = D.iter_documents("train", tokenizer_batch_size=4)
     batch, _ = next(it)
     assert 1 <= len(batch) <= 4, f"一批 {len(batch)} 条，应 <= 4"
 
 
-def test_generator_does_not_read_whole_file(tmp_path, fake_files):
+def test_generator_does_not_read_whole_file(tmp_path, monkeypatch):
     """必须是生成器：调用它本身不该把 parquet 全读进内存。"""
     p = _make_shard(tmp_path / "shard_00000.parquet", n_row_groups=5,
                     rows_per_group=2, tag="L")
     from data import dataloader as D
-    D.list_parquet_files = lambda split="train": [p]
+    monkeypatch.setattr(D, "list_parquet_files", lambda split="train": [p])
     it = D.iter_documents("train", tokenizer_batch_size=4)
     assert hasattr(it, "__next__"), "iter_documents 必须是生成器（用 yield）"
     assert isinstance(it, types.GeneratorType)

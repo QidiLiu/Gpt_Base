@@ -18,7 +18,7 @@ from common import (
 from data.tokenizer import get_tokenizer
 from data.tasks import MMLU, ARC, GSM8K
 from evaluation.metrics import compute_pass_at_k
-from inference.engine import Engine, KVCache
+from inference.engine import Engine, KVCache, render_chat_prompt
 from common.checkpoint import load_checkpoint, find_latest
 from model.gpt import build_model
 from common.config import ModelConfig
@@ -58,11 +58,13 @@ def eval_mc(model, tokenizer, name, task, n, device):
     mcfg = model.config
     m_nkv, m_hd, m_nl = mcfg.n_kv_head, mcfg.head_dim, mcfg.n_layer
     correct = 0
-    for i in range(min(len(task), n)):
+    limit = min(len(task), n)
+    for i in range(limit):
         ex = task[i]
-        prompt = (f"<|user_start|>{ex['messages'][0]['content']}<|user_end|>"
-                  f"<|assistant_start|>")
-        ids = tokenizer.encode(prompt, prepend="<|bos|>")
+        # ★ 用 render_chat_prompt，不要用 f-string 拼 "<|user_start|>"。
+        #   encode() 走 encode_ordinary，会把特殊 token 切成 12 个普通
+        #   token，与训练时的格式不一致（详见 metrics.render_chat_prompt）。
+        ids = render_chat_prompt(tokenizer, ex["messages"][0]["content"])
         # 只喂最后一个位置：RoPE 会按 cache_seqlens 偏移到正确位置，
         # 所以等价于「已经处理了前 len(ids)-1 个 token」
         kv = KVCache(1, m_nkv, m_hd, m_nl, len(ids), device, dtype=COMPUTE_DTYPE)
@@ -74,13 +76,16 @@ def eval_mc(model, tokenizer, name, task, n, device):
         # 之类的特殊 token 上，得出 0% 这种没有信息量的数字。
         row = logits[0, -1]
         best, best_logit = 0, float("-inf")
-        for i, L in enumerate("ABCD"):
-            tid = tokenizer.encode(L)   # 字母单独成 token
-            if row[tid] > best_logit:
-                best, best_logit = i, row[tid]
+        for j, L in enumerate("ABCD"):
+            # 字母必须**单独**成为一个 token，否则不同字母的分数不可比。
+            # encode 返回的是 list，用 [0] 取那个唯一 id 并断言长度。
+            tid = tokenizer.encode(L)
+            assert len(tid) == 1, f"字母 {L!r} 不是一个 token: {tid}"
+            if row[tid[0]] > best_logit:
+                best, best_logit = j, row[tid[0]]
         correct += int(best == ex["gold"])
-    acc = correct / max(1, min(len(task), n))
-    log0(f"  {name:16s} acc = {acc*100:5.1f}%  (n={min(len(task), n)})")
+    acc = correct / max(1, limit)
+    log0(f"  {name:16s} acc = {acc*100:5.1f}%  (n={limit})")
     return acc
 
 
@@ -109,9 +114,7 @@ def main():
     per_example = []
     for i in range(n):
         ex = task[i]
-        prompt = (f"<|user_start|>{ex['messages'][0]['content']}<|user_end|>"
-                  f"<|assistant_start|>")
-        ids = tokenizer.encode(prompt, prepend="<|bos|>")
+        ids = render_chat_prompt(tokenizer, ex["messages"][0]["content"])
         outs, _ = engine.generate_batch(ids, num_samples=args.num_samples,
                                         max_tokens=192, temperature=0.8,
                                         top_k=40, seed=i, use_tools=True)
@@ -146,6 +149,8 @@ def main():
         history = []
         for user_text, _ in conv:
             S = tokenizer.encode_special
+            # 历史部分逐段用 encode_special 拼（这里不能字符串拼接：
+            # encode() 走 encode_ordinary，会把特殊 token 切成普通 token）
             ids = [tokenizer.get_bos_token_id()]
             for u, a in history:
                 ids += [S("<|user_start|>")] + tokenizer.encode(u) + [S("<|user_end|>")]

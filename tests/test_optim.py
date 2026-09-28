@@ -5,14 +5,14 @@
   uv run pytest tests/test_optim.py -v
 """
 
+import pytest
 import torch
 
 from optim.orthogonalize import (
     orthogonalize_simple, orthogonalize_advanced,
     orthogonality_error, condition_number, nor_muon_scale,
-    POLAR_EXPRESS_COEFFS, NEWTON_SCHULZ_COEFFS,
 )
-from optim.muon import HyperParams, adamw_step, setup_optimizer, MuonAdamW, muon_step
+from optim.muon import HyperParams, adamw_step, setup_optimizer, muon_step
 from common.config import MuonConfig, OptimConfig
 
 # AdamW 组里允许出现的 2D 参数：嵌入类（分词嵌入 / 反嵌入 / value embedding）
@@ -191,20 +191,29 @@ def test_cautious_wd_only_decays_same_sign():
 
     谨慎 WD 实现在 muon_step 内，且仅在 flavor != "simple" 时启用。
     """
-    def run(p0, g):
+    def run(p0, g, flavor="advanced"):
         p = torch.full((8, 8), float(p0[0]))
         grad = torch.full((8, 8), float(g[0]))
         hp = _hp(step=1, lr=0.1, momentum=0.0, beta2=0.9, wd=0.5)
         buf = torch.zeros(8, 8); sec = torch.zeros(8, 1)
-        muon_step(grad, p, buf, sec, hp, MuonConfig(flavor="advanced"))
+        muon_step(grad, p, buf, sec, hp, MuonConfig(flavor=flavor))
         return p[0, 0].item()
 
-    # 同号：普通 WD 也会衰减，谨慎 WD 额外加 mask -> 至少不更差
-    same_c, same_r = run([2.0], [1.0]), 2.0 - (0.1 * 1.0 + 0.1 * 0.5 * 2.0)
-    # 反号：谨慎 WD 不应衰减
-    opp_c, opp_r = run([-2.0], [1.0]), -2.0 - (0.1 * 1.0 + 0.1 * 0.5 * -2.0)
-    assert abs(opp_c) > abs(opp_r), (
-        f"反号时谨慎 WD 几乎不衰减: {opp_c:.4f} vs 普通 {opp_r:.4f}")
+    # 谨慎 WD 的 mask = (g * p) >= 0，即「这一步会把参数往 0 拉」才衰减。
+    # 所以：
+    #   同号 (p=2, g=+1) -> mask=1，衰减照常发生（比普通 WD 略多）
+    #   反号 (p=-2, g=+1) -> mask=0，**不衰减**
+    same_c, same_plain = run([2.0], [1.0]), run([2.0], [1.0], flavor="simple")
+    opp_c, opp_plain = run([-2.0], [1.0]), run([-2.0], [1.0], flavor="simple")
+
+    # ★ 旧版算了 same_c / same_plain 却**没有断言**，等于半个测试是空转的。
+    # 同号：mask 打开，衰减量应 >= 普通 WD
+    assert abs(same_c) <= abs(same_plain) + 1e-6, (
+        f"同号时谨慎 WD 应该照常衰减（|p| 不应大于普通 WD）: "
+        f"{same_c:.4f} vs 普通 {same_plain:.4f}")
+    # 反号：mask 关闭，衰减被抑制 -> |p| 应比普通 WD 大
+    assert abs(opp_c) > abs(opp_plain), (
+        f"反号时谨慎 WD 几乎不衰减: {opp_c:.4f} vs 普通 {opp_plain:.4f}")
 
 
 # ===========================================================================
@@ -272,9 +281,97 @@ def test_hyperparams_hot_update():
 def test_hyperparams_rejects_unregistered():
     """未登记的超参名必须报错，否则打错字会静默失效。"""
     hp = HyperParams(step=0, lr=0.0)
-    try:
+    # ⚠ 必须用 pytest.raises。手写 try/except + raise AssertionError 的写法
+    #   在这里是无效的：被测代码抛的正是 AssertionError，手抛的那个会被
+    #   同一个 except 吞掉（消息里含 "未登记" -> 永不重抛）。
+    #   实测：把 HyperParams.set 改成静默接受未登记超参，本测试照样 PASSED。
+    with pytest.raises(AssertionError, match="未登记"):
         hp.set(lr2=0.1)
-        raise AssertionError("未登记的超参名应该被 assert 拦住")
-    except AssertionError as e:
-        if "未登记" not in str(e):
-            raise
+
+
+# ===========================================================================
+# ch21-22 的粒度判据（此前与相邻章节共用 -k 判据）
+# ===========================================================================
+def test_adamw_decouples_weight_decay_from_the_gradient():
+    """
+    ch21 AdamW 的粒度判据：**解耦**权重衰减。
+
+    经典（SGD-style）L2 正则把 wd 项混进梯度：g' = g + wd*p。
+    AdamW 把它从梯度里拿出来，在更新之后单独作用：p -= lr*wd*p。
+
+    为什么重要：混进梯度后，wd 会被 beta1/beta2 的自适应缩放**再乘一遍**，
+    实际衰减量变成 wd 的若干倍，无法精确控制。
+
+    验证方式：梯度恒为 0 时，两种写法结果必须不同；
+      AdamW 下参数仍按 p *= (1 - lr*wd) 收缩。
+    """
+    lr, wd = 0.1, 0.5
+    p0 = 2.0
+    hp = _hp(step=1, lr=lr, beta1=0.9, beta2=0.95, eps=1e-8, wd=wd)
+
+    # 梯度为 0：经典 L2 会把 wd 加进梯度 -> 参数被拉向 0
+    # AdamW 也会收缩（因为有独立的 p *= (1-lr*wd)），但幅度不同
+    p_adamw = torch.full((4, 4), p0)
+    adamw_step(p_adamw, torch.zeros(4, 4),
+               torch.zeros(4, 4), torch.zeros(4, 4), hp)
+    adamw_val = p_adamw[0, 0].item()
+    expected_shrink = p0 * (1 - lr * wd)
+    assert abs(adamw_val - expected_shrink) < 1e-5, (
+        f"AdamW 的 wd 收缩量不对: {adamw_val:.6f}，"
+        f"期望 p*(1-lr*wd) = {expected_shrink:.6f}")
+
+    # 反例：把 wd 混进梯度（经典 L2）会得到明显不同的结果
+    g_mixed = torch.full((4, 4), lr * wd * p0)     # g + wd*p 的效果
+    p_l2 = torch.full((4, 4), p0)
+    adamw_step(p_l2, g_mixed, torch.zeros(4, 4), torch.zeros(4, 4), hp)
+    assert abs(p_l2[0, 0].item() - adamw_val) > 1e-4, (
+        "把 wd 混进梯度后结果与解耦一致 -> 说明实现里 wd 进了梯度")
+
+    # wd=0 时参数不应因为「衰减」而变化：只有梯度驱动的更新
+    hp0 = _hp(step=1, lr=lr, beta1=0.9, beta2=0.95, eps=1e-8, wd=0.0)
+    p_c = torch.full((4, 4), p0)
+    adamw_step(p_c, torch.zeros(4, 4), torch.zeros(4, 4), torch.zeros(4, 4), hp0)
+    assert abs(p_c[0, 0].item() - p0) < 1e-6, (
+        f"wd=0 且梯度为 0 时参数不该变，实际 {p_c[0,0].item():.6f} vs {p0}")
+    # 同一个 step 调两次必须得到相同结果（确定性，无隐藏状态）
+    g = torch.randn(4, 4)
+    r1, r2 = p0, p0
+    p1, p2 = torch.full((4, 4), r1), torch.full((4, 4), r2)
+    m1, m2 = torch.zeros(4, 4), torch.zeros(4, 4)
+    v1, v2 = torch.zeros(4, 4), torch.zeros(4, 4)
+    adamw_step(p1, g, m1, v1, hp0)
+    adamw_step(p2, g, m2, v2, hp0)
+    assert torch.allclose(p1, p2), "相同输入两次调用应完全一致（确定性）"
+
+
+def test_muon_orthogonalization_beats_raw_gradient_update():
+    """
+    ch22「为什么矩阵参数适合 Muon」的粒度判据。
+
+    核心主张：矩阵的梯度谱严重不均衡（不同方向尺度差几个数量级），
+    直接用 SGD 更新会让「高频方向」主导；正交化把条件数从 O(κ) 压到 O(1)。
+
+    验证：构造一个**各向异性**的梯度矩阵（谱差 100 倍），
+      正交化之后所有奇异值都应落在 1 附近，而原始梯度不是。
+    """
+    torch.manual_seed(0)
+    # 各向异性矩阵：对角线从 1 到 100，条件数很大
+    U, _ = torch.linalg.qr(torch.randn(64, 64))
+    scales = torch.logspace(0, 2, 64)              # 1 .. 100
+    G = U @ torch.diag(scales) @ U.T
+    before = condition_number(G)
+    assert before > 20, f"构造的矩阵条件数应该很大，实际 {before:.1f}"
+
+    O = orthogonalize_simple(G, steps=5)
+    after = condition_number(O)
+    assert after < before / 5, (
+        f"正交化后条件数应大幅下降: {before:.1f} -> {after:.1f}")
+    # 正交化后各奇异值应接近 1（半正交矩阵的谱）
+    s = torch.linalg.svdvals(O.float())
+    assert s.max() / s.min() < 3.0, (
+        f"正交化后谱应接近平坦，实测 max/min = {s.max()/s.min():.2f}")
+    # 而且总范数应约等于 sqrt(min(m,n))（半正交矩阵的 Frobenius 范数）
+    target = min(O.shape[-2:]) ** 0.5
+    got = O.norm()
+    assert abs(float(got) - target) / target < 0.6, (
+        f"正交化后 Frobenius 范数应 ≈ sqrt(min(m,n)) = {target:.1f}，实际 {float(got):.1f}")

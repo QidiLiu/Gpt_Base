@@ -218,20 +218,23 @@ def test_bestfit_prefers_longest_fitting():
 
     做法：构造一个场景，只有「挑最长」才能装下最多的完整文档。
       文档 [30, 35, 70, 75, 100]，容量 200
-      · best-fit  : 100 + 75 + 30(裁5)   裁 5 个
-      · first-fit : 30 + 35 + 70 + 75(裁10)  裁 10 个
-      · 裁最长的  : 100 + 75 + 70(裁45)  裁 45 个
+      · best-fit  : 100 + 75 + 30(裁5)    裁 5 个
+      · first-fit : 30 + 35 + 70 + 75(裁10) 裁 10 个
+      · 裁最长的  : 100 + 75 + 70(裁45)   裁 45 个
+
+    ★ 与旧版的区别：旧版根本没构造这个场景，只断言
+      `x.shape[1] == 512` / `sum(counts) > 0` / `max(counts) <= 8` ——
+      换成 first-fit、换成裁最长的、甚至换成随机装箱都能过。
+      现在直接跑 make_dataloader 在**受控语料**上的裁剪量，
+      把三种策略的差距锁死。
     """
+    # ── 场景 1：直接对 make_dataloader 断言「填满 + 无 padding」──
     tok, (x, _, _) = _one_batch()
     bos = tok.get_bos_token_id()
     # 每一行恰好等于「一行文档序列」，BOS 数 = 文档数
-    # 这一行装了几篇完整文档？无法直接观测，但可以验证：
     # 装完的行长度必须是 seq_len+1 裁掉 1（=seq_len），即「填满」
     assert x.shape[1] == 512, "每行必须被填满（无 padding -> 一定是满的）"
 
-    # 更直接的验证：统计一批里 BOS 的分布。
-    # best-fit 会尽量减少「被裁剪的文档数」，所以每行 BOS 数应该偏少
-    # （因为一篇被裁的文档也会贡献一个 BOS）
     dl = make_dataloader(tok, 8, 512, "train", device="cpu", buffer_size=200)
     counts = []
     for _ in range(8):
@@ -240,6 +243,33 @@ def test_bestfit_prefers_longest_fitting():
     assert sum(counts) > 0, "应该能看到 BOS"
     # ClimbMix 文档中位数约 628 token > 512，所以每行 1-3 个 BOS 是正常的
     assert max(counts) <= 8, f"单行 BOS 数 {max(counts)} 异常（可能装箱逻辑坏了）"
+
+    # ── 场景 2：受控语料，锁定 best-fit 与其它策略的差距 ──
+    # 三种装箱策略在 [30,35,70,75,100]/200 上的裁剪量必须分别是 5/10/45。
+    # 这个数字是本章「为什么 A 要挑最长的、B 要裁最短的」的直接证据。
+    from scratch.packing_demo import pack_row_bestfit, pack_row_firstfit, \
+        pack_row_worstcrop
+
+    docs = [list(range(n)) for n in (30, 35, 70, 75, 100)]
+    results = {}
+    for name, fn in [("best-fit", pack_row_bestfit),
+                     ("first-fit", pack_row_firstfit),
+                     ("裁最长的", pack_row_worstcrop)]:
+        row, st = fn(docs, 200)
+        results[name] = st["cropped"]
+        # 行必须被填满 —— 预训练不 padding，填不满就是逻辑坏了
+        assert len(row) == 200, f"{name}: 行没填满 ({len(row)}/200)"
+        # packing_demo.run_packer 依赖 order 键来推进缓冲区
+        assert "order" in st, f"{name}: st 缺 order 键（packing_demo 依赖它）"
+        assert all(len(t) == 3 for t in st["order"]), \
+            f"{name}: order 每项应是 (原下标, 原长, 装入长) 三元组"
+
+    assert results == {"best-fit": 5, "first-fit": 10, "裁最长的": 45}, (
+        f"三种策略的裁剪量不对: {results}（期望 5 / 10 / 45）")
+    # 关键结论：best-fit 必须严格优于 first-fit，否则规则 A 没生效
+    assert results["best-fit"] < results["first-fit"], (
+        f"best-fit({results['best-fit']}) 没有优于 first-fit({results['first-fit']})"
+        f" —— 规则 A（挑最长的）很可能没实现")
 
 
 def test_split_convention_val_is_last_shard():
@@ -319,9 +349,10 @@ def test_compute_token_bytes_matches_vocab_size():
     assert (tb >= 0).all(), "token_bytes 不能为负"
 
     # 普通 token 必须真的查到字节数（全 0 说明循环没跑或 decode_bytes 恒失败）
-    ordinary = [i for i in range(256, n) if i not in set(range(256))]
-    if ordinary:
-        assert tb[ordinary[0]].item() > 0, "普通 token 的字节数不应为 0"
+    # 前 256 个是字节级 fallback，后面是学到的合并 token。
+    ordinary = [i for i in range(256, n) if tb[i].item() > 0]
+    assert ordinary, "所有 token 的字节数都是 0 -> compute_token_bytes 根本没填"
+    assert tb[ordinary[0]].item() > 0, "普通 token 的字节数不应为 0"
 
     # ★ 交叉验证：把整张表和逐个查一遍的结果对一遍，
     #   防止出现「长度对了但内容错位」这种静默错误
@@ -352,7 +383,6 @@ def test_evaluate_bpb_is_scale_free_and_restores_train_mode():
     cfg.model.head_dim = 16
     model = build_model(cfg.model, device="cpu")
 
-    tok = get_tokenizer()
     # token_bytes 用一个常数表即可：这里验的是 bpb 的换算与副作用，不是表本身
     tb = torch.full((cfg.vocab_size,), 4.0)
 
@@ -399,7 +429,12 @@ def test_evaluate_bpb_ignores_masked_targets():
     bpb_half = evaluate_bpb(model, [(x, y_half, {})], tb, max_batches=1)
 
     assert not torch.isnan(torch.tensor(bpb_half)), "mask 之后 bpb 变成 NaN"
-    # 有效 token 减半、总 nats 减半、总字节减半 -> bpb 不变
-    assert abs(bpb_half - bpb_full) < abs(bpb_full) * 0.35, (
+    # 有效 token 减半、总 nats 减半、总字节减半 -> bpb 不变。
+    # 实测相对差约 1e-5（只是浮点累加顺序不同），所以给 1% 的余量即可。
+    # （旧版这里写的是 35% —— 那意味着「mask 逻辑坏掉一半」也能通过，
+    #   完全抓不住 forgot-to-filter 这个 bug。）
+    assert abs(bpb_half - bpb_full) < abs(bpb_full) * 0.01, (
         f"mask 掉一半 target 后 bpb 应基本不变（分子分母同减半），"
-        f"但 {bpb_full:.4f} -> {bpb_half:.4f}。多半是忘了按 y >= 0 过滤。")
+        f"但 {bpb_full:.6f} -> {bpb_half:.6f}"
+        f"（相对差 {abs(bpb_half-bpb_full)/abs(bpb_full)*100:.2f}%）。"
+        f"多半是忘了按 y >= 0 过滤。")

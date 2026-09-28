@@ -38,7 +38,7 @@ def test_render_mc_no_space_between_equals_and_letter():
     """等号与字母之间不能有空格 —— 否则 tokenizer 切出不同的 token。"""
     out = render_mc("q", "ABCD", ["x", "y", "z", "w"])
     assert "=A" in out
-    assert "= A" not in out, f"出现了 '= A'，会与 assistant 的 'A' 不是同一个 token"
+    assert "= A" not in out, "出现了 '= A'，会与 assistant 的 'A' 不是同一个 token"
     # 每个选项行都该是 - <选项>=<字母>
     for line in out.splitlines():
         if line.startswith("- "):

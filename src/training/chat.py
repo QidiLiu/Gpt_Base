@@ -64,17 +64,37 @@ def load_sft_model(mode, tag, device):
 
 
 def render_history(tokenizer, system, history):
-    """把 (user, assistant) 历史拼成一段带特殊 token 的 prompt。"""
+    """
+    把 (user, assistant) 历史拼成一段带特殊 token 的 prompt。
+
+    ── ★ 特殊 token 必须用 encode_special 逐个取 id ──────────────
+    不能写成 f"<|user_start|>{u}<|user_end|>" 再整个 encode()：
+    encode() 走 tiktoken 的 encode_ordinary，它**按定义忽略** special
+    tokens，会把 "<|user_start|>" 切成 12 个普通 token。
+    详见 evaluation/metrics.py:render_chat_prompt 的完整说明。
+
+    ── ★ 结尾必须是 <|assistant_start|> ────────────────────────
+    之前这里只补了 <|user_start|> 就停下，等于在问模型
+    「请你接着写 user 的下一句」，与训练时的对话格式不一致。
+    render_conversation 产出的序列是
+        BOS <|user_start|> u <|user_end|> <|assistant_start|> a <|assistant_end|>
+    所以推理时 prompt 必须停在 <|assistant_start|>，
+    之后 decode 出来的才是 assistant 的内容。
+    """
     S = tokenizer.encode_special
     ids = [tokenizer.get_bos_token_id()]
     if system:
-        ids += [S("<|user_start|>"), S("<|assistant_start|>")]
-        ids += tokenizer.encode(system)
-        ids += [S("<|assistant_end|>")]
+        # system 合并进第一条 user 消息（与 render_chat_prompt 的约定一致）。
+        # 不要像之前那样把它渲染成一段「assistant 说的话」——
+        # system 不是模型的输出，语义完全不同。
+        ids += [S("<|user_start|>")] + tokenizer.encode(system) + [S("<|user_end|>")]
     for user, assistant in history:
         ids += [S("<|user_start|>")] + tokenizer.encode(user) + [S("<|user_end|>")]
         ids += [S("<|assistant_start|>")] + tokenizer.encode(assistant) + [S("<|assistant_end|>")]
-    ids += [S("<|user_start|>")]
+    # 最后一段：只有 user，没有 assistant。
+    # 必须收在 <|assistant_start|> —— 调用方会 forward 整段 ids，
+    # 再 decode 之后的部分作为 assistant 的回复（见 main.ask）。
+    ids += [S("<|user_start|>"), S("<|user_end|>"), S("<|assistant_start|>")]
     return ids
 
 

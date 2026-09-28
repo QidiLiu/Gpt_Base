@@ -20,7 +20,7 @@ mean_bytes = tb[:n_normal].sum().item() / n_normal
 print(f"  平均每 token {mean_bytes:.3f} 字节")
 
 V = tok.get_vocab_size()
-print(f"\n=== 理论参考：均匀分布（随机初始化）===")
+print("\n=== 理论参考：均匀分布（随机初始化）===")
 print(f"  对 {V} 个 token 完全不确定 -> 每 token {math.log(V):.4f} nats")
 print(f"  换算 bpb = log2({V}) / {mean_bytes:.3f} = {math.log(V)/math.log(2)/mean_bytes:.4f}")
 

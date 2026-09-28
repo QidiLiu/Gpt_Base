@@ -194,7 +194,14 @@ def evaluate_bpb(model, loader, token_bytes, max_batches: int) -> float:
             = total_nats / ln(2) / total_bytes
 
     最后这个形式最干净：只需要累加「总 nats」和「总字节数」两个数。
+
+    ★ 一定要还原 train 模式：train_base.py 会在训练中途调用本函数，
+      模型被留在 eval 模式就会一直 eval 下去 —— 现在没有 dropout 看不出
+      问题，但哪天加了 dropout 就会静默训坏。
     """
+    # ★ 顺序：先记住原状态，再切 eval()。反过来写的话 eval() 已经把
+    #   training 置成 False，was_training 恒为 False，下面的还原成了死代码。
+    was_training = model.training
     model.eval()
     total_nats, total_bytes = 0.0, 0.0
 
@@ -211,6 +218,8 @@ def evaluate_bpb(model, loader, token_bytes, max_batches: int) -> float:
         #   模型的工作是「预测这个 token」，按被预测物计费
         total_bytes += token_bytes[y[valid]].sum().item()
 
+    if was_training:
+        model.train()
     return total_nats / (math.log(2) * max(total_bytes, 1e-9))
 ```
 
@@ -386,18 +395,23 @@ print("\n→ 同样的真实能力，loss 相差 5 倍。bpb 才是那个不变�
 
 ```bash
 # 1) 基线
-bash script/train_base.sh full --model-tag d6_base
-grep 最好 runs/../  # 或者从 meta_XXXXXX.json 读
+bash script/train_base.sh full --model-tag d6_base --no-resume
 
 # 2) 消融（一次只改一个变量）
-bash script/train_base.sh full --model-tag d6_norope --no-rope
-bash script/train_base.sh full --model-tag d6_noqk --no-qk-norm
-bash script/train_base.sh full --model-tag d6_gelu --activation gelu
-bash script/train_base.sh full --model-tag d6_tied --tie-embeddings
-bash script/train_base.sh full --model-tag d6_nosoftcap --no-softcap
-bash script/train_base.sh full --model-tag d6_muonadv --muon-advanced
-bash script/train_base.sh full --model-tag d6_alltricks --all-tricks
+bash script/train_base.sh full --model-tag d6_norope     --no-rope         --no-resume
+bash script/train_base.sh full --model-tag d6_noqk       --no-qk-norm      --no-resume
+bash script/train_base.sh full --model-tag d6_gelu       --activation gelu --no-resume
+bash script/train_base.sh full --model-tag d6_tied       --tie-embeddings  --no-resume
+bash script/train_base.sh full --model-tag d6_nosoftcap  --no-softcap      --no-resume
+bash script/train_base.sh full --model-tag d6_muonadv    --muon-advanced   --no-resume
+bash script/train_base.sh full --model-tag d6_alltricks  --all-tricks      --no-resume
 ```
+
+> ⚠ **`--no-resume` 不是可选项。** `train_base.py` 默认会自动从
+> `runs/base_checkpoints/<tag>/` 里最新的存档续训。同一个 tag 重跑时，
+> auto-resume 会把上次的存档捡起来、**0 步就跑完**，
+> 两组 bpb 会一模一样 —— 看起来「这个 trick 毫无影响」，
+> 实际上是根本没训练。`script/train_base.py --help` 里有这条说明。
 
 读结果的命令：
 
@@ -412,32 +426,21 @@ print(f'{\"$t\":<18} bpb={d[\"best_val_bpb\"]:.4f}  step={d[\"step\"]}')"
 done
 ```
 
-把这个循环写进 `scratch/ablation.sh`：
+仓库里**已经有一份现成的** `scratch/ablation.sh`，直接用，不要覆盖它：
 
 ```bash
-#!/usr/bin/env bash
-# 消融实验结果汇总。用法：bash scratch/ablation.sh
-cd "$(dirname "$0")/.."
-printf "%-18s %-10s %-8s %s\n" "实验" "val_bpb" "Δ vs base" "说明"
-printf "%s\n" "------------------------------------------------------------------------"
-base=""
-for d in runs/base_checkpoints/*/; do
-  t=$(basename "$d")
-  f=$(ls -t "$d"meta_*.json 2>/dev/null | head -1)
-  [ -z "$f" ] && continue
-  bpb=$(python3 -c "import json;print(json.load(open('$f'))['best_val_bpb'])")
-  if [ "$t" = "d6_base" ]; then base=$bpb; fi
-  if [ -n "$base" ]; then
-    delta=$(python3 -c "print(f'{${bpb} - ${base}:+.4f}')" 2>/dev/null || echo "")
-  else
-    delta=""
-  fi
-  printf "%-18s %-10s %-8s\n" "$t" "$bpb" "$delta"
-done
-echo
-echo "Δ < 0 表示比 base 好（bpb 越低越好）"
-echo "注意：|Δ| 小于 0.02 时，要重复跑一次确认不是噪声"
+bash scratch/ablation.sh            # 汇总全部（默认基线 d6_base）
+bash scratch/ablation.sh d4base     # 指定基线 tag
 ```
+
+它会扫 `runs/base_checkpoints/*/`，读每个目录里最新的 `meta_*.json`，
+打印 `val_bpb` 和相对基线的 `Δ`。它接受一个可选的基线 tag 参数 ——
+写死 tag 的版本会在你用 `d4` 做消融时给出错误的 Δ 列。
+
+如果你想自己写一份，注意两个易错点：
+- 表头是 3 列（`实验 / val_bpb / Δ vs base`），下面的 `printf` 也必须是 3 列
+- Δ 的计算要用 `float()`：`python3 -c "print(f'{${bpb} - ${base}:+.4f}')"`
+  这种写法在 bash 里会被当成未定义变量而静默失败（上面那行就是错的示范）
 
 **三条纪律**（否则消融实验就是自欺欺人）：
 
@@ -445,7 +448,7 @@ echo "注意：|Δ| 小于 0.02 时，要重复跑一次确认不是噪声"
 2. **一次只改一个变量。**
 3. **`|Δ| < 0.02` 时重复跑一次。** 确认不是初始化随机性导致的波动。
 
-**第 43 章会给出完整的消融总表模板。**
+**完整的消融总表模板见 `doc/tutorial/README.md`。**
 
 ---
 

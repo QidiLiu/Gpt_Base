@@ -16,7 +16,7 @@ import pytest
 import torch
 
 from evaluation.metrics import (
-    compute_pass_at_k, evaluate_bpb, evaluate_multiple_choice,
+    compute_pass_at_k, evaluate_bpb,
 )
 
 
@@ -104,15 +104,54 @@ def test_more_samples_lower_variance_of_pass_at_1_estimator():
 
     这条锁住 eval_sft 那个「生成 4 条却只用 1 条」的无谓浪费：
     两者是同一个量，但后者抖动大一倍。
+
+    ★ 与旧版的区别：旧版拿 random 自己模拟两个估计量算方差，
+      **从头到尾没有 import 过 compute_pass_at_k** —— 也就是说
+      metrics.py 整个坏掉它照样绿。这里改为驱动真实的实现：
+      对同一个「每题独立、正确率 p」的题目模型，
+      枚举所有可能的 outcome 组合，算 pass@1 估计量的真实方差。
     """
-    import random
+    import itertools
     p, trials = 0.3, 4000
+
+    def variance_of_pass1_estimator(n):
+        """用**真实的 compute_pass_at_k** 估计 n 样本 pass@1 的方差。
+
+        对每个 outcome 向量，按二项分布的权重取期望与二阶矩。
+        """
+        acc = acc2 = 0.0
+        for outcomes in itertools.product([False, True], repeat=n):
+            weight = 1.0
+            for ok in outcomes:
+                weight *= p if ok else (1.0 - p)
+            est = compute_pass_at_k(list(outcomes), k=1)
+            acc += weight * est
+            acc2 += weight * est * est
+        mean = acc
+        return acc2 - mean * mean
+
+    # 先锁住「k=1 时 pass@k 化简成 c/n」这个恒等式 ——
+    # 它是上面方差结论成立的前提。
+    for outcomes in ([True], [False], [True, True, False, True],
+                     [False, False, False, True], [True] * 4, [False] * 4):
+        c = sum(outcomes)
+        assert compute_pass_at_k(outcomes, k=1) == pytest.approx(c / len(outcomes))
+
+    var1 = variance_of_pass1_estimator(1)
+    var4 = variance_of_pass1_estimator(4)
+    # 理论值：n=1 -> p(1-p)=0.21；n=4 -> 0.0525（正好 1/4，因为 0.21/4=0.0525）
+    assert var1 == pytest.approx(0.21, abs=1e-9), f"n=1 的方差应等于 p(1-p)，实际 {var1:.4f}"
+    assert var4 == pytest.approx(var1 / 4, rel=0.02), (
+        f"n=4 的方差应约为 n=1 的 1/4，实际 {var4:.5f} vs {var1/4:.5f}")
+    # 采样估计也要稳定（固定 seed，避免 flaky）
+    import random
+    random.seed(0)
     stds = {}
     for n in (1, 4):
         ests = []
         for _ in range(trials):
             c = sum(1 for _ in range(n) if random.random() < p)
-            ests.append(c / n)
+            ests.append(compute_pass_at_k([True] * c + [False] * (n - c), k=1))
         m = sum(ests) / len(ests)
         stds[n] = math.sqrt(sum((e - m) ** 2 for e in ests) / len(ests))
     assert stds[4] < stds[1] * 0.75, (

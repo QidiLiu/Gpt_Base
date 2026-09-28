@@ -27,7 +27,10 @@ from common import (
 # 实测每个 shard 的结构（92 MB 压缩包）：
 #   84 个 row group，86,016 篇文档，单列 string
 #   每个 row group 1024 篇，约 3 MB 未压缩
-#   文档长度 min=11 / 中位数≈2400 / max≈110000 字符
+#   文档长度 min=4 / 中位数=628 / max=25055 token
+#   （本项目实测值，见 scratch/packing_demo.py。比 nanochat 文档里说的要短：
+#    nanochat 给的是「中位数 ~2400 字符 / max 11 万字符」，那是字符不是 token，
+#    而且是不同的语料切片 —— 别把两组数字混用。）
 PRETRAIN_REPO = os.environ.get("GPT_PRETRAIN_REPO", "karpathy/climbmix-400b-shuffle")
 PRETRAIN_MAX_SHARD = 6542
 SHARD_FILENAME = "shard_{:05d}.parquet"
@@ -108,44 +111,19 @@ def get_base_dir_shakespeare() -> str:
 # ---------------------------------------------------------------------------
 # 任务数据（SFT / 评测）：手动替代 HuggingFace datasets
 # ---------------------------------------------------------------------------
-def load_hub_dataset(repo_id: str, subset: str = "default", split: str = "train"):
-    """
-    极简版 load_dataset。
-
-    HuggingFace 的每个数据集在 Hub 上都有自动生成的 parquet 导出，
-    我们只要：调 API 列出 shard 列表 -> 下载 -> 用 pyarrow 读。
-    对本项目需要的规模，这已经够了，而且少一个巨型依赖。
-
-    返回一个带 __len__ / __getitem__ / shuffle 的轻量对象（见 data/tasks.py）。
-    """
-    from data.tasks import HubDataset  # 延迟导入避免循环依赖
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-    import urllib.request
-
-    slug = repo_id.replace("/", "--")
-    shards_dir = os.path.join(get_task_dir(), slug, subset, split)
-    manifest_path = os.path.join(shards_dir, "manifest.json")
-
-    # manifest 最后写，它存在就代表下载完了 —— 这是比加锁更省事的完成标记
-    if not os.path.exists(manifest_path):
-        os.makedirs(shards_dir, exist_ok=True)
-        log0(f"下载任务数据集 {repo_id} [{subset}/{split}] ...")
-        url = f"{HF_ENDPOINT}/api/datasets/{repo_id}/parquet/{subset}/{split}"
-        with urllib.request.urlopen(url, timeout=60) as r:
-            shard_urls = json.loads(r.read())
-        names = []
-        for i, su in enumerate(shard_urls):
-            name = f"{i:05d}.parquet"
-            download_file(su, os.path.join(shards_dir, name), desc=f"{repo_id}/{name}")
-            names.append(name)
-        with open(manifest_path, "w") as f:
-            json.dump(names, f)
-
-    with open(manifest_path) as f:
-        names = json.load(f)
-    tables = [pq.read_table(os.path.join(shards_dir, n)) for n in names]
-    return HubDataset(pa.concat_tables(tables))
+# ⚠ 这里**不再**保留第二份实现。data/tasks.py 里已有一份（见那里的注释，
+#   讲清楚了 manifest 标记、User-Agent、URL 重写这三件事），SFT / 评测的
+#   所有调用方 —— MMLU / ARC / GSM8K / SmolTalk —— 用的都是那一份。
+#
+#   之前这里也有一份，语义重复，而且**没有任何地方 import 它**
+#   （`from data.dataset import ...` 只取 list_parquet_files 和
+#   download_tiny_shakespeare）。属于纯粹的死代码。
+#
+#   而且它本身是坏的：用 urllib.request.urlopen 既没带 User-Agent，
+#   也没把镜像返回的 huggingface.co 分片 URL 重写到 HF_ENDPOINT ——
+#   在国内网络下会直接 403 / 卡死。留着它只会让人以为「这份能用」。
+#   改成一行转发，两个分支的行为也就统一了。
+from data.tasks import load_hub_dataset  # noqa: E402,F401
 
 
 # ---------------------------------------------------------------------------

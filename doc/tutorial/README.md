@@ -25,7 +25,7 @@
 ```bash
 cd ~/Dev/Gpt_Base
 uv sync                      # 建 .venv，torch 走 cu132
-uv run pytest tests/ -q      # 166 个测试全绿说明环境没问题
+uv run pytest tests/ -q      # 185 passed, 2 skipped 说明环境没问题
 bash script/train_base.sh smoke
 ```
 
@@ -142,7 +142,7 @@ src/
 
 ---
 
-## 五个入口脚本
+## 六个入口脚本
 
 ```bash
 bash script/train_base.sh smoke   # 预训练（自动串好 下载数据→训tokenizer→训练）
@@ -158,8 +158,8 @@ bash script/chat.sh       smoke   # 交互式聊天
 
 ## 卡住了怎么办
 
-1. **跑测试**：`uv run pytest tests/ -q`。166 个测试覆盖了形状、因果性、
+1. **跑测试**：`uv run pytest tests/ -q`。177 个章节判据（另加 10 个判据自检）覆盖了形状、因果性、
    RoPE、KV cache、优化器等最容易出错的地方，挂了就说明你的改动引入了 bug。
 2. **看注释**：本项目的代码注释密度很高，尤其是「为什么这么写」的部分，
    基本每个非显然的决定都有解释。
-3. **看排错手册**：第 43 章（第二批交付，尚未写）。
+3. **看排错手册**（第二批交付，尚未写）。

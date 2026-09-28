@@ -3,7 +3,7 @@ Dataloader：把一堆变长文档打包成定长的 (B, T) 训练 batch。
 
 这是本项目最值得逐行读懂的一段代码。教程卷1 的核心章节会完整拆解。
 
-核心问题：文档长度不一（实测 ClimbMix 中位数 2400 字符，max 11 万），
+核心问题：文档长度不一（实测 ClimbMix min=4 / 中位数=628 / max=25055 token），
 但 GPU 只吃矩形 tensor。怎么不浪费地拼成矩形？
 
 naive 做法（nanoGPT 的做法）：

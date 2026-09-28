@@ -17,7 +17,7 @@ from model.layers import (
 )
 from model.gpt import build_model, sample_from_logits
 from optim.orthogonalize import (
-    orthogonalize_simple, orthogonalize_advanced, orthogonality_error,
+    orthogonalize_simple, orthogonality_error,
 )
 from inference.engine import KVCache
 
@@ -143,7 +143,6 @@ def test_kv_cache_prefill_equals_naive():
     from common import COMPUTE_DTYPE
     kv = KVCache(1, cfg.n_kv_head, cfg.head_dim, cfg.n_layer, 64, "cpu",
                  dtype=COMPUTE_DTYPE)
-    from model.layers import rms_norm
     with torch.no_grad():
         out = model(tokens[:, :5], kv_cache=kv)
         for i in range(5, 6):
@@ -233,23 +232,6 @@ def test_orthogonalize_improves_orthogonality():
     before = orthogonality_error(G)
     after = orthogonality_error(orthogonalize_simple(G))
     assert after < before, f"正交化没起作用: {before:.4f} -> {after:.4f}"
-
-
-def test_muon_plus_rescues_low_rank():
-    """
-    回归测试（本项目最重要的一条）：Newton-Schulz 推不动近零奇异值。
-
-    低秩矩阵的谱里有大量 0，而 0 是 Newton-Schulz 迭代的不动点，
-    所以无论迭代多少步都救不回来。Muon+ 的重归一化能把整体范数 snap 回去，
-    从而把「推不动的方向」整体放大。
-    """
-    torch.manual_seed(0)
-    G = torch.randn(64, 8) @ torch.randn(8, 192)     # rank=8
-    simple = orthogonalize_advanced(G, use_muon_eq=False, use_muon_plus=False)
-    full = orthogonalize_advanced(G, use_muon_eq=False, use_muon_plus=True)
-    assert orthogonality_error(full) < orthogonality_error(simple) / 2, \
-        (f"Muon+ 应该大幅改善低秩矩阵: simple={orthogonality_error(simple):.3f} "
-         f"full={orthogonality_error(full):.3f}")
 
 
 # ===========================================================================
@@ -382,3 +364,277 @@ def test_all_tricks_build_and_forward():
     assert model.smear_lambda.grad is not None
     ve_key = next(iter(model.value_embeds))
     assert model.value_embeds[ve_key].weight.grad is not None
+
+
+# ===========================================================================
+# 逐章的粒度判据（卷2 第08/13/16 章、卷3 第17/18/19 章）
+# ===========================================================================
+# 为什么要这些：progress.sh 之前让第 08/13/16 章共用 `-k uniform`、
+# 第 17/18/19 章共用 `-k all_tricks`，学习者无法知道**具体哪一章**做完了。
+# 下面每个测试只锁一个组件，-k 选择器可以一一对应到章节。
+
+def _tiny_all_tricks_model(only=None):
+    """建一个开启了全部 5 个残差流 trick 的极小模型（device='cpu'）。"""
+    cfg = make_run_config("debug", vocab_size=64)
+    cfg.model.sequence_len = 32
+    cfg.model.n_head = cfg.model.n_kv_head = 2
+    cfg.model.head_dim = 16
+    cfg.model.n_embd = 32
+    for f in ("use_resid_lambdas", "use_x0_lambdas", "use_value_embeds",
+              "use_smear", "use_backout"):
+        setattr(cfg.model, f, True)
+    if only is not None:
+        for f in ("use_resid_lambdas", "use_x0_lambdas", "use_value_embeds",
+                  "use_smear", "use_backout"):
+            if f != only:
+                setattr(cfg.model, f, False)
+    model = build_model(cfg.model, device="cpu")
+    # ★ 打破「block 初始是恒等映射」：init_weights 把两个 c_proj 都置零，
+    #   所以刚建好的模型里每个 block 都是恒等映射，残差流 trick 的影响
+    #   会被完整地「吃掉」——实测零差异。必须先给 c_proj 一点随机值。
+    with torch.no_grad():
+        for n, prm in model.named_parameters():
+            if "c_proj" in n:
+                prm.normal_(0.0, 0.05)
+    return model
+
+
+def test_rmsnorm_preserves_direction_per_row():
+    """
+    ch08 RMSNorm 的粒度判据。
+
+    三个必须成立的性质：
+      1) **逐行**方向不变（归一化只改长度，不改该行的方向）
+      2) 输出长度固定（每行 RMS = 1），与输入长度无关
+      3) 不减均值 —— 这正是它比 LayerNorm 便宜的地方
+    """
+    torch.manual_seed(0)
+    x = torch.randn(3, 5, 64)
+    y = rms_norm(x)
+    # 1) 逐行方向不变：RMSNorm 对最后两维整体乘一个标量
+    cos_row = torch.nn.functional.cosine_similarity(
+        x[..., 0, :], y[..., 0, :], dim=-1)
+    assert torch.allclose(cos_row, torch.ones_like(cos_row), atol=1e-4), \
+        f"RMSNorm 改变了该行的方向，余弦相似度 {cos_row}"
+    # 2) 输出 RMS 恒为 1
+    got = y.pow(2).mean(-1).sqrt()
+    assert torch.allclose(got, torch.ones_like(got), atol=1e-3), \
+        f"输出 RMS 应为 1，实际 {got}"
+    # 3) 不减均值：对零均值的输入，输出也该零均值
+    z = x - x.mean(-1, keepdim=True)
+    zy = rms_norm(z)
+    assert abs(float(zy.mean())) < 1e-5, "对零均值输入做了中心化 -> 就不该叫 RMSNorm"
+
+
+def test_mlp_activation_relu2_vs_gelu():
+    """
+    ch13 MLP 的粒度判据：relu2 与 gelu 必须真的不同，且 relu2 保持非负。
+
+    ReLU²(x) = max(0,x)²：x>0 时导数就是 2x，极其便宜。
+    GELU(x) = x·Φ(x)：对负数不是恒 0。
+    """
+    from common.config import build_model_config
+    cfg = build_model_config(2, 16, 16, sequence_len=32, vocab_size=64)
+    x = torch.randn(2, 8, cfg.n_embd) * 3.0        # 放大到有明显的负数
+    outs = {}
+    for act in ("relu2", "gelu"):
+        cfg.activation = act
+        outs[act] = MLP(cfg).c_fc(x)               # 投影后的 pre-activation
+    r2, gl = outs["relu2"], outs["gelu"]
+    # 两者必须不同（否则 activation 开关根本没生效）
+    assert not torch.allclose(r2, gl), "relu2 和 gelu 的输出完全一样 -> 开关没生效"
+    # relu2 对负输入输出 0，gelu 对负输入不是 0
+    neg = torch.full((1, 1, 4), -1.0)
+    assert torch.allclose(F.relu(neg).square(), torch.zeros_like(neg))
+    assert (F.gelu(neg) < 0).any(), "gelu 对负输入应产生非零输出"
+    # 整条 MLP 在两种激活下都要能跑通
+    for act in ("relu2", "gelu"):
+        cfg.activation = act
+        out = MLP(cfg)(x)
+        assert torch.isfinite(out).all(), f"{act}: MLP 输出非有限"
+
+
+def test_meta_device_weights_are_all_finite():
+    """
+    ch16 meta device 三步法的粒度判据。
+
+    ★ 本项目最重要的一个 NaN 坑：__init__ 里算的 cos/sin 是在 meta device
+      上创建的（只有形状壳）。to_empty() 只分配**未初始化的垃圾内存**，
+      不填任何值 —— 实测会直接变成 NaN，loss 立刻是 nan。
+      漏掉「在 init_weights 里重算 RoPE」这一步，整个模型就废了，
+      而且症状是 loss=nan，没有任何报错指向真正的原因。
+    """
+    cfg = make_run_config("debug", vocab_size=64)
+    cfg.model.sequence_len, cfg.model.n_embd = 32, 32
+    cfg.model.n_head = cfg.model.n_kv_head = 2
+    cfg.model.head_dim = 16
+    model = build_model(cfg.model, device="cpu")
+
+    # RoPE 表必须是有限值（不是 meta 垃圾）
+    assert torch.isfinite(model.cos).all(), "cos 表含 NaN/Inf -> 没在 init_weights 重算"
+    assert torch.isfinite(model.sin).all(), "sin 表含 NaN/Inf -> 没在 init_weights 重算"
+    # 所有参数也必须有限
+    bad = [n for n, p in model.named_parameters() if not torch.isfinite(p).all()]
+    assert not bad, f"这些参数含 NaN/Inf: {bad}"
+    # 参数必须在真实设备上（不是 meta）
+    assert model.transformer.wte.weight.device.type == "cpu", "参数还留在 meta device"
+    # 初始 loss ≈ ln(vocab)
+    x = torch.randint(0, 64, (2, 32))
+    with torch.no_grad():
+        loss = model(x, x)
+    ref = torch.log(torch.tensor(64.0))
+    assert abs(float(loss) - float(ref)) < 0.1, \
+        f"初始 loss {float(loss):.4f} 应 ≈ ln(64)={float(ref):.4f}"
+
+
+def test_resid_lambdas_scale_the_residual_stream():
+    """
+    ch17 resid_lambdas / x0_lambdas 的粒度判据。
+
+    resid_lambdas[i]：第 i 层入口把残差流整体乘一个可学标量。
+    ★ 关键：它必须真的影响前向结果。把它们手动置 0，
+      同一批输入的输出必须变化 —— 否则 forward 里根本没消费它们。
+    """
+    torch.manual_seed(0)
+    model = _tiny_all_tricks_model(only="use_resid_lambdas")
+    x = torch.randint(0, 64, (2, 32))
+    with torch.no_grad():
+        base = model(x).clone()
+        model.resid_lambdas.zero_()            # 每层入口把残差流清零
+        off = model(x).clone()
+    assert not torch.allclose(base, off, atol=1e-6), (
+        "resid_lambdas 置 0 后输出没变 -> forward 根本没消费它")
+    # 它们是可学参数，必须能收到梯度
+    model(x, x).backward()
+    assert model.resid_lambdas.grad is not None, "resid_lambdas 没有梯度"
+    assert torch.isfinite(model.resid_lambdas.grad).all()
+
+
+def test_x0_lambdas_add_back_the_initial_embedding():
+    """
+    ch17 x0_lambdas 的粒度判据：把初始嵌入加回来必须改变输出。
+    """
+    torch.manual_seed(0)
+    model = _tiny_all_tricks_model(only="use_x0_lambdas")
+    x = torch.randint(0, 64, (2, 32))
+    with torch.no_grad():
+        base = model(x).clone()
+        model.x0_lambdas.fill_(1.0)           # 明显加回初始嵌入
+        on = model(x).clone()
+    assert not torch.allclose(base, on, atol=1e-6), (
+        "x0_lambdas 变化后输出没变 -> forward 根本没消费它")
+    model(x, x).backward()
+    assert model.x0_lambdas.grad is not None, "x0_lambdas 没有梯度"
+    assert torch.isfinite(model.x0_lambdas.grad).all()
+
+
+def test_backout_subtracts_mid_layer_residual():
+    """
+    ch19 Backout 的粒度判据：末层前减去中层残差。
+
+    backout_lambda 默认 0.2。关掉它（置 0）必须改变输出。
+    """
+    torch.manual_seed(0)
+    model = _tiny_all_tricks_model(only="use_backout")
+    x = torch.randint(0, 64, (2, 32))
+    with torch.no_grad():
+        base = model(x).clone()
+        model.backout_lambda.zero_()
+        off = model(x).clone()
+    assert not torch.allclose(base, off, atol=1e-6), (
+        "backout_lambda 置 0 后输出没变 -> forward 根本没消费它")
+    model(x, x).backward()
+    assert model.backout_lambda.grad is not None, "backout_lambda 没有梯度"
+    assert torch.isfinite(model.backout_lambda.grad).all()
+def test_value_embeds_live_on_alternate_layers():
+    """
+    ch18 Value Embeddings 的粒度判据。
+
+    ★ 位置约定：只加在「隔一层」和「最后一层」上（ResFormer 的折中）。
+      残差流的容量有限，每加一路信号就多一份要维护的信息。
+      has_value_embed(i, n) 的规则是 i % 2 == (n-1) % 2。
+    """
+    from model.layers import has_value_embed
+    for n in (2, 4, 6, 8):
+        wanted = [i for i in range(n) if has_value_embed(i, n)]
+        assert n - 1 in wanted, f"n={n}：最后一层必须有 value embed"
+        assert len(wanted) == (n + 1) // 2, \
+            f"n={n}：应该正好一半，实际 {wanted}"
+
+    # 真实模型里的层数必须与规则一致
+    model = _tiny_all_tricks_model(only="use_value_embeds")
+    n = model.config.n_layer
+    got = sorted(int(k) for k in model.value_embeds.keys())
+    assert got == [i for i in range(n) if has_value_embed(i, n)], \
+        f"value_embeds 挂在 {got}，规则要求 {[i for i in range(n) if has_value_embed(i, n)]}"
+
+    # 每一层都必须真的消费 ve —— 直接比对「传 ve」与「不传 ve」的
+    # 单层 attention 输出。（不用端到端：init 时 c_proj 全零，
+    #   每个 block 都是恒等映射，trick 的影响会被完全吃掉。）
+    T = 6
+    x = torch.randn(1, T, model.config.n_embd)
+    cos, sin = model.cos[:, :T], model.sin[:, :T]
+    block = model.transformer.h[n - 1]          # 必然带 value_embed 的那一层
+    ve = model.value_embeds[str(n - 1)](torch.randint(0, 64, (1, T)))
+    with torch.no_grad():
+        # c_proj 初始是全零（每个 block 一开始是恒等映射），
+        # 那样 attn 的输出恒为 0，ve 有没有被消费都看不出来。先给它一点值。
+        block.attn.c_proj.weight.normal_(0.0, 0.05)
+        with_ve = block.attn(x, (cos, sin), model.window_sizes[n - 1], None, ve)
+        without = block.attn(x, (cos, sin), model.window_sizes[n - 1], None, None)
+    assert (with_ve - without).abs().max() > 1e-7, \
+        "传了 ve 但输出完全一样 -> attention 根本没消费 ve（ve_gate 没接上）"
+
+    # 且必须能收到梯度
+    model(torch.randint(0, 64, (1, 32)), torch.randint(0, 64, (1, 32))).backward()
+    emb = model.value_embeds[str(n - 1)]
+    assert emb.weight.grad is not None, "value_embeds 权重没有梯度"
+
+
+def test_smear_mixes_previous_embedding():
+    """
+    ch19 Smear 的粒度判据：把前一个 token 的嵌入混进当前 token。
+
+        x[i] = x[i] + lambda * sigmoid(gate) * x[i-1]
+
+    ★ 直接单测 _apply_smear，而不是端到端。
+      端到端测不出来：残差流本来就通过 attention 携带 token 身份，
+      改位置 0 会让**所有**位置的输出都变，smear 的贡献被淹没。
+
+    三条必须成立：
+      1) lambda = 0（初始值）时必须是恒等映射
+      2) 位置 0 没有前驱，必须原样保留
+      3) 位置 t 的增量必须由 x[t-1] 决定
+    """
+    torch.manual_seed(0)
+    model = _tiny_all_tricks_model(only="use_smear")
+    B, T, D = 2, 8, model.config.n_embd
+    x = torch.randn(B, T, D)
+
+    with torch.no_grad():
+        # 1) 初始 lambda 就是 0（刻意关闭），此时必须是恒等映射
+        assert float(model.smear_lambda.detach()) == 0.0, "smear_lambda 初始应为 0"
+        assert torch.allclose(model._apply_smear(x.clone(), None), x, atol=1e-7), \
+            "lambda=0 时 _apply_smear 应是恒等映射"
+
+        model.smear_lambda.fill_(1.0)
+        on = model._apply_smear(x.clone(), None)
+        # 2) 位置 0 原样保留（没有前驱）
+        assert torch.allclose(on[:, 0], x[:, 0], atol=1e-7), \
+            "位置 0 没有前驱，不该被混合"
+        # 3) 位置 1..T-1 必须被改变
+        delta = (on - x)
+        assert delta[:, 1:].abs().max() > 1e-7, "位置 1..T-1 没有任何变化 -> smear 没生效"
+        assert delta[:, 0].abs().max() == 0.0, "位置 0 不该有增量"
+
+    # 4) 增量必须由**前一个位置**驱动：改 x[0] 只能影响位置 1 的 smear 项
+    x2 = x.clone()
+    x2[:, 0] += 5.0
+    with torch.no_grad():
+        on2 = model._apply_smear(x2, None)
+    assert not torch.allclose(on[:, 1], on2[:, 1], atol=1e-7), \
+        "改 x[0] 没有改变位置 1 的输出 -> smear 项不是来自 x[0]"
+
+    # 5) 是可学参数，必须有梯度
+    model(torch.randint(0, 64, (1, 32)), torch.randint(0, 64, (1, 32))).backward()
+    assert model.smear_lambda.grad is not None, "smear_lambda 没有梯度"

@@ -91,20 +91,25 @@ if _out is None:
 else:
     tail = [l for l in _out.strip().split("\n") if "passed" in l or "failed" in l]
     actual = tail[-1] if tail else "?"
+    branch = subprocess.run(["git", "-C", str(ROOT), "rev-parse",
+                             "--abbrev-ref", "HEAD"],
+                            capture_output=True, text=True).stdout.strip() or "?"
     np_ = sum(int(x) for x in re.findall(r"(\d+) passed", actual))
     nf_ = sum(int(x) for x in re.findall(r"(\d+) failed", actual))
-    # 合法状态：main 骨架态（少数 passed + 多数 failed）；
-    #          solution 完整实现（全通过）；solution 上只有 test_core 的旧状态。
-    LEGAL = {(np_, nf_), (18, 0), (total, 0)}
+    # 合法状态：骨架态（少数 passed + 多数 failed）—— 文档里这么写是对的；
+    #          完整答案态（全通过）。
+    LEGAL = {(np_, nf_), (total, 0)}
     for p in docs:
         s = p.read_text()
         for m in re.finditer(r"`(\d+) passed(?:, (\d+) failed)?`", s):
             cp, cf = int(m.group(1)), int(m.group(2) or 0)
             if (cp, cf) not in LEGAL:
+                other = "solution" if branch == "main" else "main"
                 note(False, str(p.relative_to(ROOT)),
                      f"写了 `{cp} passed{', ' + str(cf) + ' failed' if cf else ''}`，"
-                     f"main 实际 `{' '.join(actual.split(' in ')[0].split())}`"
-                     f"（solution 分支是 {total} passed）")
+                     f"当前分支（{branch}）实际 "
+                     f"`{' '.join(actual.split(' in ')[0].split())}`"
+                     f"（{other} 分支是 {total} passed）")
 
 # ── 3. 教程里引用的文件是否存在 ───────────────────────────────
 for p in docs:
@@ -161,7 +166,11 @@ for m in re.finditer(r"\]\((\d\d-[^)]+\.md)\)", _itxt):
 
 # ── 报告 ─────────────────────────────────────────────────────
 print("测试文件分布:", counts, "合计", total)
-print("main 分支 pytest:", actual)
+_branch = subprocess.run(["git", "-C", str(ROOT), "rev-parse",
+                          "--abbrev-ref", "HEAD"],
+                         capture_output=True, text=True).stdout.strip() or "?"
+print(f"{_branch} 分支 pytest:", actual)
+print("（判据只在两种状态下成立：骨架态有 failed，答案态全通过）")
 print()
 if ISSUES:
     print(f"发现 {len(ISSUES)} 个问题：")

@@ -220,11 +220,11 @@ src/
 | `scratch/vocab_math.py` | `common.config` | ✅ **现在就能跑** | 卷 0 |
 | `scratch/bpb_uncomparable.py` | 纯 math | ✅ **现在就能跑** | 卷 0（它是卷 1 的材料） |
 | `scratch/mini_bpe.py` | 纯 Python + `data.dataset` | ✍ **手抄目标** | 敲完 `MiniBPE` 的 4 个方法（第 03 章） |
-| `scratch/mask_demo.py` | `tokenizer.render_conversation` | 🔒 | 卷1 第 04 章 |
-| `scratch/check_data.py` | `tokenizer` + `dataloader` | 🔒 | 卷1 第 05 章（只有断言，无可抄算法） |
-| `scratch/naive_dataloader.py` | 同上 | ✍ **手抄目标** | 敲完两个函数再跑（第 05 章消融基线） |
-| `scratch/packing_demo.py` | 同上 | ✍ **手抄目标** | 敲完三个装箱函数再跑（第 05 章） |
-| `scratch/bpb_demo.py` | checkpoint + `dataloader` | 🔒 | 卷1 第 06 章 |
+| `scratch/mask_demo.py` | `tokenizer.load` → `render_conversation` | 🔒 | 卷1 第 04 章 |
+| `scratch/check_data.py` | `tokenizer.load` → `dataloader` | 🔒 | 卷1 第 05 章（只有断言，无可抄算法） |
+| `scratch/naive_dataloader.py` | `tokenizer.load` → `list_parquet_files` | ✍ **手抄目标** | 敲完两个函数再跑（第 05 章消融基线） |
+| `scratch/packing_demo.py` | `tokenizer.load` → 三个装箱函数 | ✍ **手抄目标** | 敲完三个装箱函数再跑（第 05 章） |
+| `scratch/bpb_demo.py` | `tokenizer.load` → checkpoint + `dataloader` | 🔒 | 卷1 第 06 章 |
 | `bash script/train_base.sh` | 上面全部 + 模型 + 优化器 | 🔒 | 卷 1-4 全部完成 |
 | `bash script/eval_base.sh` | checkpoint | 🔒 | 至少跑过一次 `train_base` |
 | `bash script/train_sft.sh` | `data.tasks`（只读）+ 预训练 ckpt | 🔒 | 卷1 + 卷2-4 |
@@ -232,8 +232,12 @@ src/
 | `bash script/chat.sh` | 有 checkpoint 就能跑 | 🔒 | 跑过一次 `train_base`（无 SFT 时用基座） |
 | `bash script/progress.sh` | 无 | ✅ **现在就能跑** | 随时 |
 
-> 🔒 意味着跑到那一步会报 `NotImplementedError: 待实现：xxx`。
+> 🔒 / ✍ 意味着跑到那一步会报 `NotImplementedError: 待实现：xxx`。
 > **那不是 bug，是你还没写那一块。**
+>
+> 「依赖」列写的是**第一个真正卡住的地方**，不是这个脚本想演示的功能。
+> 实测：除 3 个纯 Python 脚本外，其余全部先卡在 `tokenizer.load` ——
+> 也就是说在卷1 第 02-03 章完成前，它们报的都不是自己想演示的那个待实现。
 
 想跳过等待看效果：
 

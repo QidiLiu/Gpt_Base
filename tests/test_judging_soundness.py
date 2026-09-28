@@ -268,3 +268,53 @@ def test_answer_holding_scripts_are_not_pre_solved():
         "这些是教程要你手抄的脚本，但 main 上是完整答案：\n  " + "\n  ".join(leaked)
         + "\n把它们也抽成骨架，或移到 solution 分支。"
     )
+
+
+# ===========================================================================
+# 5. scratch 门禁表不许与实际行为脱节
+# ===========================================================================
+def test_scratch_gating_table_matches_reality():
+    """README 里 scratch 脚本的 🔒/✅/✍ 标注，必须与实跑结果一致。
+
+    真实事故：`mini_bpe.py` 被标成 🔒「写完 list_parquet_files 一行」，
+    但实测在 main 上直接 exit=0 跑通 —— 门禁是假的。
+    这类声明可证伪，所以就该用可证伪的方式守住。
+    """
+    if current_branch() == "solution":
+        pytest.skip("solution 是答案分支，脚本本就该全部可跑")
+
+    readme = (REPO / "doc/tutorial/README.md").read_text(encoding="utf-8")
+    rows = re.findall(r"^\|\s*`scratch/(\w+\.py)`\s*\|([^|]*)\|([^|]*)\|", readme, re.M)
+    assert len(rows) >= 9, f"门禁表只解析到 {len(rows)} 行（应 >= 9）"
+
+    import os
+    env = dict(os.environ, PYTHONPATH=str(SRC), OMP_NUM_THREADS="1")
+    mismatches = []
+
+    for name, _dep, status in rows:
+        status = status.strip()
+        path = REPO / "scratch" / name
+        if not path.exists():
+            mismatches.append(f"{name}: 表里有，但文件不存在")
+            continue
+
+        try:
+            r = subprocess.run([sys.executable, str(path)], cwd=REPO, env=env,
+                               capture_output=True, text=True, timeout=180)
+        except subprocess.TimeoutExpired:
+            mismatches.append(f"{name}: 跑超时，状态无法判定")
+            continue
+
+        blocked = "NotImplementedError" in (r.stdout + r.stderr)
+        runs = r.returncode == 0
+
+        if "✅" in status and not runs:
+            mismatches.append(f"{name}: 表里标 ✅ 能跑，实际跑不了")
+        elif ("🔒" in status or "✍" in status) and runs and not blocked:
+            mismatches.append(
+                f"{name}: 表里标 {status[:2]}（应被挡住），实际直接跑通了 —— 门禁是假的")
+
+    assert not mismatches, (
+        "scratch 门禁表与实际行为不符：\n  " + "\n  ".join(mismatches)
+        + "\n要么改代码，要么改 README 的状态标注。"
+    )

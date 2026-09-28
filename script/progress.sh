@@ -69,3 +69,8 @@ echo "第 06 章的 bpb 验证  ：uv run python scratch/bpb_demo.py"
 echo
 echo "只读章节（卷5-8）不需要敲代码，直接读 src/ 即可。"
 echo "看完整答案：git checkout solution   回到你的版本：git checkout main"
+echo
+printf '\033[1;33m[重要]\033[0m 改完 src/ 或 tests/ 之后，先确认判据本身是可达的：\n'
+echo "  git stash && git checkout solution && uv run pytest tests/ -q   # 必须是 51 passed"
+echo "  git checkout main && git stash pop"
+echo "  （判据若在完整答案上都过不了，你永远敲不到全绿 —— 见 tests/test_judging_soundness.py）"

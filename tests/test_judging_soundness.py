@@ -173,22 +173,24 @@ def test_tutorial_claims_match_reality():
 
     # scratch 脚本数量
     n_scratch = len(list((REPO / "scratch").glob("*.py")))
-    import re
-    m = re.search(r"scratch/\s+(\d+) 个可运行的实验脚本", readme)
+    m = re.search(r"scratch/\s+(\d+) 个实验脚本|scratch/\s+(\d+) 个可运行的实验脚本", readme)
     if m:
-        assert int(m.group(1)) == n_scratch, (
-            f"README 说 scratch 有 {m.group(1)} 个可运行脚本，实际 {n_scratch} 个"
+        claimed = int(m.group(1) or m.group(2))
+        assert claimed == n_scratch, (
+            f"README 说 scratch 有 {claimed} 个脚本，实际 {n_scratch} 个"
         )
 
-    # 测试总数
+    # 测试总数：只数「章节判据」，判据自检文件本身不计入
     n_tests = sum(
         sum(1 for _ in _test_functions(p))
         for p in TESTS.glob("test_*.py")
+        if p.name != "test_judging_soundness.py"
     )
     m = re.search(r"tests/\s+(\d+) 个测试", readme)
     if m:
         assert int(m.group(1)) == n_tests, (
             f"README 说 {m.group(1)} 个测试，实际 {n_tests} 个"
+            f"（章节判据，不含判据自检）"
         )
 
 

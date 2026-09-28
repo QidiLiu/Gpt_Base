@@ -57,7 +57,7 @@ NotImplementedError: 待实现：attend —— 见 docstring 的三步
 ## 环境自检 + 进度追踪
 
 ```bash
-cd ~/Dev/Gpt_Base
+cd /path/to/Gpt_Base          # 换成你自己的仓库路径
 uv sync
 bash script/progress.sh        # 告诉你哪一章还没做完
 ```
@@ -118,7 +118,7 @@ src/
 
 > 🚧 = 教程正文还没写（代码骨架已就位，第二批交付）。
 > **判据测试和 `src/` 里的骨架提示已经可以用了**，所以你可以先敲代码，
-> 教程正文随后补上。
+> 教程正文随后补上。（未写的章节不做超链接，避免点进去是死链。）
 
 ### 卷 0 · 准备　📖 只读
 | 章 | 标题 | 核心问题 |
@@ -138,36 +138,36 @@ src/
 ### 卷 2 · 模型：tensor 怎么变成 logits　✍ 手抄
 | 章 | 标题 | 完成判据指向 |
 |---|---|---|
-| 🚧 [07](07-先跑通一个最小GPT.md) | 先跑通一个最小 GPT | `-k uniform or causal` |
-| 🚧 [08](08-RMSNorm.md) | RMSNorm | `-k uniform` |
-| 🚧 [09](09-RoPE旋转位置编码.md) | **RoPE 旋转位置编码** | `-k rope` |
-| 🚧 [10](10-注意力三步曲.md) | 注意力三步曲 | `-k attend or sliding` |
-| 🚧 [11](11-为什么用SDPA和FlashAttention.md) | SDPA 与 FlashAttention | `-k sdpa` ★ 有个大坑 |
-| 🚧 [12](12-QKNorm与GQA.md) | QK Norm 与 GQA | `-k attend` |
-| 🚧 [13](13-MLP激活函数.md) | MLP 与激活函数 | `-k uniform` |
-| 🚧 [14](14-残差流与Pre-LN.md) | 残差流与 Pre-LN | `-k causal` |
-| 🚧 [15](15-权重绑定与logit-softcap.md) | 权重绑定与 logit softcap | `-k sampling or topk` |
+| 🚧 07 | 先跑通一个最小 GPT | `-k uniform or causal` |
+| 🚧 08 | RMSNorm | `-k uniform` |
+| 🚧 09 | **RoPE 旋转位置编码** | `-k rope` |
+| 🚧 10 | 注意力三步曲 | `-k attend or sliding` |
+| 🚧 11 | SDPA 与 FlashAttention | `-k sdpa` ★ 有个大坑 |
+| 🚧 12 | QK Norm 与 GQA | `-k attend` |
+| 🚧 13 | MLP 与激活函数 | `-k uniform` |
+| 🚧 14 | 残差流与 Pre-LN | `-k causal` |
+| 🚧 15 | 权重绑定与 logit softcap | `-k sampling or topk` |
 
 ### 卷 3 · nanochat 的架构 trick　✍ 手抄
 | 章 | 标题 | 完成判据指向 |
 |---|---|---|
-| 🚧 [16](16-meta-device三步建模型.md) | **meta device 三步建模型** | `-k uniform` ★ 有个 NaN 坑 |
-| 🚧 [17](17-逐层标量resid与x0.md) | resid_lambdas 与 x0_lambdas | `-k all_tricks` |
-| 🚧 [18](18-Value-Embeddings与门控.md) | Value Embeddings 与门控 | `-k all_tricks` |
-| 🚧 [19](19-Smear与Backout.md) | Smear 与 Backout | `-k all_tricks` |
-| 🚧 [20](20-滑动窗口注意力.md) | 滑动窗口注意力 | `-k sliding` |
+| 🚧 16 | **meta device 三步建模型** | `-k uniform` ★ 有个 NaN 坑 |
+| 🚧 17 | resid_lambdas 与 x0_lambdas | `-k all_tricks` |
+| 🚧 18 | Value Embeddings 与门控 | `-k all_tricks` |
+| 🚧 19 | Smear 与 Backout | `-k all_tricks` |
+| 🚧 20 | 滑动窗口注意力 | `-k sliding` |
 
 ### 卷 4 · 优化器（最硬核的一卷）　✍ 手抄
 | 章 | 标题 | 完成判据指向 |
 |---|---|---|
-| 🚧 [21](21-从SGD到AdamW.md) | 从 SGD 到 AdamW | `-k adamw` |
-| 🚧 [22](22-为什么矩阵参数适合Muon.md) | 为什么矩阵参数适合 Muon | `-k adamw` |
-| 🚧 [23](23-手写Newton-Schulz正交化.md) | **手写 Newton-Schulz 正交化** | `-k orthogonalize` ★ 20 行 |
-| 🚧 [24](24-Polar-Express.md) | Polar Express | `-k polar` |
-| 🚧 [25](25-三个进阶修正.md) | MuonEq / Muon+ / NorMuon | `-k muon_plus or nor_muon` |
-| 🚧 [26](26-谨慎权重衰减.md) | 谨慎权重衰减 | `-k cautious` |
-| 🚧 [27](27-混合优化器与参数分组.md) | 混合优化器与参数分组 | `-k grouping` |
-| 🚧 [28](28-compile融合与0D-tensor技巧.md) | torch.compile 融合与 0-D tensor 技巧 | `-k hyperparams` |
+| 🚧 21 | 从 SGD 到 AdamW | `-k adamw` |
+| 🚧 22 | 为什么矩阵参数适合 Muon | `-k adamw` |
+| 🚧 23 | **手写 Newton-Schulz 正交化** | `-k orthogonalize` ★ 20 行 |
+| 🚧 24 | Polar Express | `-k polar` |
+| 🚧 25 | MuonEq / Muon+ / NorMuon | `-k muon_plus or nor_muon` |
+| 🚧 26 | 谨慎权重衰减 | `-k cautious` |
+| 🚧 27 | 混合优化器与参数分组 | `-k grouping` |
+| 🚧 28 | torch.compile 融合与 0-D tensor 技巧 | `-k hyperparams` |
 
 ### 卷 5-8 · 训练循环、分布式、对齐、收尾　📖 只读
 *（第二批交付：代码已在 `src/` 里，是只读的。教程随第二批补上）*

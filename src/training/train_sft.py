@@ -67,10 +67,10 @@ def make_sft_loader(task, tokenizer, device_batch_size, seq_len, device,
       3) **按序列而不是按 token 计 loss**
          预训练每个 token 一份；SFT 只对 mask=1 的 token 计。
     """
-    # 数据顺序的可复现性：任务混合的顺序由 TaskMixture 用固定种子 42 决定，
-    # 这里再用一个显式的 RNG 决定「同一条被看过几次」。同一 seed 跑两次
-    # 必须给出完全相同的 batch 序列 —— 否则消融实验的差异里会混进
-    # 「这次数据顺序不一样」这个噪声源。
+    # 数据顺序的可复现性：任务混合内部的顺序由 TaskMixture 用固定种子 42
+    # 决定，这里再用一个显式的 RNG 决定「每轮先看哪一条」。
+    # 同一 seed 跑两次必须给出完全相同的 batch 序列 —— 否则消融实验的
+    # 差异里会混进「这次数据顺序不一样」这个噪声源。
     g = torch.Generator().manual_seed(seed)
 
     def gen():

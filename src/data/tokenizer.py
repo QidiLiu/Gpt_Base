@@ -201,7 +201,7 @@ class BPETokenizer:
           实测 512 长度的 SFT 数据里有 23% 的样本落入这个陷阱。
 
           保留尾部才是对的：最近一轮才是我们要学的东西；
-          至于「对话开头被切掉」是无所谓���，模型只需要学「在这样的上下文
+          至于「对话开头被切掉」是无所谓的，模型只需要学「在这样的上下文
           状态下该说什么」。
         """
         assert truncate in ("right", "left"), f"truncate 必须是 right/left，得到 {truncate}"

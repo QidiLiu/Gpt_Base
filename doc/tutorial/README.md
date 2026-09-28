@@ -25,7 +25,7 @@
 ```bash
 cd ~/Dev/Gpt_Base
 uv sync                      # 建 .venv，torch 走 cu132
-uv run pytest tests/ -q      # 185 passed, 2 skipped 说明环境没问题
+uv run pytest tests/ -q      # 190 passed, 2 skipped 说明环境没问题
 bash script/train_base.sh smoke
 ```
 
@@ -158,7 +158,7 @@ bash script/chat.sh       smoke   # 交互式聊天
 
 ## 卡住了怎么办
 
-1. **跑测试**：`uv run pytest tests/ -q`。177 个章节判据（另加 10 个判据自检）覆盖了形状、因果性、
+1. **跑测试**：`uv run pytest tests/ -q`。182 个章节判据（另加 10 个判据自检）覆盖了形状、因果性、
    RoPE、KV cache、优化器等最容易出错的地方，挂了就说明你的改动引入了 bug。
 2. **看注释**：本项目的代码注释密度很高，尤其是「为什么这么写」的部分，
    基本每个非显然的决定都有解释。

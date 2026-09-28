@@ -522,7 +522,7 @@ uv run python scratch/naive_dataloader.py
 但 BOS 只在每篇文档的开头出现，所以一行里 BOS 少不代表污染少 ——
 **真正的问题是「跨边界」**：
 
-一行 512 token，文档中位数 740 token，所以一行里通常有 1 个 BOS
+一行 512 token，文档中位数 628 token，所以一行里通常有 1 个 BOS
 和 1 次「从某篇文档中间切进来」。这个「切进来」的起点
 模型是没有任何信号能识别的。
 

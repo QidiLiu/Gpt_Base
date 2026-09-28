@@ -187,33 +187,46 @@ def test_nor_muon_scale_reduces_neuron_imbalance():
 # ch26：谨慎权重衰减
 # ===========================================================================
 def test_cautious_wd_only_decays_same_sign():
-    """回归测试（ch26）：谨慎 WD 只在「梯度与参数同号」时衰减。
-
-    谨慎 WD 实现在 muon_step 内，且仅在 flavor != "simple" 时启用。
     """
-    def run(p0, g, flavor="advanced"):
-        p = torch.full((8, 8), float(p0[0]))
-        grad = torch.full((8, 8), float(g[0]))
-        hp = _hp(step=1, lr=0.1, momentum=0.0, beta2=0.9, wd=0.5)
-        buf = torch.zeros(8, 8); sec = torch.zeros(8, 1)
-        muon_step(grad, p, buf, sec, hp, MuonConfig(flavor=flavor))
+    回归测试（ch26）：谨慎 WD 只在「梯度与参数同号」时衰减。
+
+    谨慎 WD 的 mask = (g * p) >= 0，即「这一步会把参数往 0 拉」才衰减：
+      同号 (p=+2, g=+1) -> mask=1 -> 衰减照常，**与不开谨慎 WD 完全一致**
+      反号 (p=-2, g=+1) -> mask=0 -> **完全不衰减**，|p| 比普通 WD 大
+
+    ★ 与旧版的区别：旧版拿 `flavor="simple"` 当「普通 WD」基线，
+      但 simple 不只关了谨慎 WD，它还把 orthogonalize_advanced 换成
+      orthogonalize_simple 并跳过 NorMuon —— **一次改了三四件事**，
+      对比结果被正交器的差异污染。实测把谨慎 WD 整个删掉，旧版照样通过。
+      现在基线是**同一个 flavor，只把 use_cautious_wd 设为 False**，
+      只隔离这一个变量。
+    """
+    def run(p0, g, cautious=True):
+        p = torch.full((8, 8), float(p0))
+        grad = torch.full((8, 8), float(g))
+        h = _hp(step=1, lr=0.1, momentum=0.0, beta2=0.9, wd=0.5)
+        muon_step(grad, p, torch.zeros(8, 8), torch.zeros(8, 1), h,
+                  MuonConfig(flavor="advanced", use_cautious_wd=cautious))
         return p[0, 0].item()
 
-    # 谨慎 WD 的 mask = (g * p) >= 0，即「这一步会把参数往 0 拉」才衰减。
-    # 所以：
-    #   同号 (p=2, g=+1) -> mask=1，衰减照常发生（比普通 WD 略多）
-    #   反号 (p=-2, g=+1) -> mask=0，**不衰减**
-    same_c, same_plain = run([2.0], [1.0]), run([2.0], [1.0], flavor="simple")
-    opp_c, opp_plain = run([-2.0], [1.0]), run([-2.0], [1.0], flavor="simple")
+    # 同号：mask 打开 -> 与「不做谨慎 WD」逐位一致
+    same_c = run(2.0, 1.0, cautious=True)
+    same_plain = run(2.0, 1.0, cautious=False)
+    assert abs(same_c - same_plain) < 1e-6, (
+        f"同号时 mask 应该打开，谨慎 WD 与普通 WD 应完全一致: "
+        f"{same_c:.6f} vs {same_plain:.6f}")
+
+    # 反号：mask 关闭 -> 衰减被抑制，|p| 应比普通 WD 大
+    opp_c = run(-2.0, 1.0, cautious=True)
+    opp_plain = run(-2.0, 1.0, cautious=False)
+    assert abs(opp_c) > abs(opp_plain), (
+        f"反号时谨慎 WD 应该完全不衰减: {opp_c:.6f} vs 普通 {opp_plain:.6f}")
+    # 抑制掉的量正好是一次 WD：lr*wd*|p| = 0.1*0.5*2 = 0.1
+    assert abs(abs(opp_c) - abs(opp_plain) - 0.1) < 1e-6, (
+        f"反号时被抑制的衰减量应恰好等于 lr*wd*|p| = 0.1，实际 "
+        f"{abs(abs(opp_c) - abs(opp_plain)):.6f}")
 
     # ★ 旧版算了 same_c / same_plain 却**没有断言**，等于半个测试是空转的。
-    # 同号：mask 打开，衰减量应 >= 普通 WD
-    assert abs(same_c) <= abs(same_plain) + 1e-6, (
-        f"同号时谨慎 WD 应该照常衰减（|p| 不应大于普通 WD）: "
-        f"{same_c:.4f} vs 普通 {same_plain:.4f}")
-    # 反号：mask 关闭，衰减被抑制 -> |p| 应比普通 WD 大
-    assert abs(opp_c) > abs(opp_plain), (
-        f"反号时谨慎 WD 几乎不衰减: {opp_c:.4f} vs 普通 {opp_plain:.4f}")
 
 
 # ===========================================================================

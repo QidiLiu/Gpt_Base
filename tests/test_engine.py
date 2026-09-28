@@ -541,3 +541,110 @@ def test_render_chat_prompt_merges_system_into_user():
     lo, hi_ = ids.index(tk.USER_START), ids.index(tk.USER_END)
     body = ids[lo + 1:hi_]
     assert len(body) == len("be nice\n\nhi"), f"system+user 文本不对: {body}"
+
+
+def test_render_history_puts_the_question_in_the_prompt():
+    """
+    回归测试：`render_history` 必须把本轮 user_text 放进 prompt。
+
+    曾经的 bug：`ask(user_text)` 调的是 `render_history(tok, system, history)`
+    —— user_text 根本没传下去，它只在生成完回复后进了 history.append。
+    于是模型收到的是
+        <|bos|><|user_start|><|user_end|><|assistant_start|>
+    一个**空的 user 轮**，模型在凭空回答，`bash script/chat.sh` 完全不可用。
+    而且这个函数此前**零测试覆盖**，所以一直没被发现。
+    """
+    from training.chat import render_history
+
+    tk = FakeTokenizer()
+    q = "What is the capital of France?"
+    ids = render_history(tk, None, [], q)
+
+    # 问题必须真的在 prompt 里，而且夹在 user_start / user_end 之间
+    assert tk.USER_START in ids, "缺 <|user_start|>"
+    assert tk.USER_END in ids, "缺 <|user_end|>"
+    lo, hi = ids.index(tk.USER_START), ids.index(tk.USER_END)
+    body = ids[lo + 1:hi]
+    assert body, "user 轮是空的 —— 问题没进 prompt！"
+    # 收在 <|assistant_start|>，之后才是模型的输出
+    assert ids[-1] == tk.ASST_START, f"应以 <|assistant_start|> 收尾，实际 {ids[-1:]}"
+    # 且不能出现空的 user 轮
+    assert hi == lo + 1 + len(q), f"user 轮长度 {hi-lo-1}，应等于问题长度 {len(q)}"
+
+
+def test_render_history_keeps_prior_turns_and_merges_system():
+    """
+    多轮时历史必须完整保留；system 合并进**第一条** user 消息
+    （与 render_conversation 的约定一致：实测 system + "\n\n" + 首条 user）。
+    """
+    from training.chat import render_history
+
+    tk = FakeTokenizer()
+    hist = [("Hi", "Hello!"), ("Bye", "Ciao")]
+    ids = render_history(tk, "be brief", hist, "Third?")
+
+    # 两条历史各自的 assistant 段都在
+    assert ids.count(tk.ASST_END) == 2, "历史 assistant 段丢了"
+    # 3 个 user 轮 = 2 条历史 + 本轮（system 不单独占一轮）
+    assert ids.count(tk.USER_START) == 3, \
+        f"应有 3 个 user 轮（2 条历史 + 本轮），实际 {ids.count(tk.USER_START)}"
+    # 最后一个 user 轮的内容恰好是本轮问题，之后收在 <|assistant_start|>
+    start = len(ids) - 1 - ids[::-1].index(tk.USER_START)   # 最后一个 <|user_start|>
+    end = ids.index(tk.USER_END, start)                     # 它后面的 <|user_end|>
+    body = ids[start + 1:end]
+    assert len(body) == len("Third?"), \
+        f"本轮 user 内容长度 {len(body)}，应为 {len('Third?')}（问题必须完整进 prompt）"
+    assert end + 1 == len(ids) - 1 and ids[-1] == tk.ASST_START, \
+        "最后一个 user 轮之后应紧跟 <|assistant_start|>"
+
+
+def test_ask_sends_the_question_to_the_engine():
+    """
+    回归测试：**真正送进 Engine 的 ids 里必须含有用户的问题。**
+
+    这条比「直接调 render_history」强得多 —— 之前的 bug 不在
+    render_history 本身，而在**调用点**：ask(user_text) 调的是
+    `render_history(tok, system, history)`，user_text 压根没传下去。
+    只测 render_history 的话，这个 bug 照样能通过（实测过）。
+
+    这里用一个假的 Engine 记录收到的 ids，断言：
+      1) ids 里含有问题的内容
+      2) 收在 <|assistant_start|>（之后才是模型的输出）
+      3) history 里正确追加了 (user_text, reply)
+    """
+    from training.chat import ask
+
+    tk = FakeTokenizer()
+    q = "What is the capital of France?"
+
+    class SpyEngine:
+        def __init__(self):
+            self.seen = None
+        def generate_batch(self, ids, **kw):
+            self.seen = list(ids)
+            # 假装生成了 3 个 token
+            n = len(ids)
+            return [ids + [tk.FIRST_PLAIN + i for i in range(3)]], [[0] * (n + 3)]
+
+    eng = SpyEngine()
+    history = []
+    reply = ask(eng, tk, history, q)
+
+    assert eng.seen is not None, "Engine 没被调用"
+    # 问题必须在 prompt 里：夹在最后一个 user 轮中
+    assert tk.USER_START in eng.seen, f"prompt 里没有 <|user_start|>：{eng.seen}"
+    start = len(eng.seen) - 1 - eng.seen[::-1].index(tk.USER_START)
+    assert tk.USER_END in eng.seen[start:], (
+        f"<|user_start|> 之后没有 <|user_end|>：{eng.seen}\n"
+        f"★ 这正是那个 bug 的样子 —— user_text 没传进 render_history，"
+        f"prompt 收在 <|user_start|> 就停了，模型看到的是空 user 轮。")
+    end = eng.seen.index(tk.USER_END, start)
+    body = eng.seen[start + 1:end]
+    assert len(body) == len(q), (
+        f"送进 Engine 的 user 轮长度 {len(body)}，应为 {len(q)} —— "
+        f"问题没进 prompt（这是 chat.sh 不可用的根因）")
+    # 收在 <|assistant_start|>
+    assert eng.seen[-1] == tk.ASST_START
+    # history 正确追加
+    assert len(history) == 1 and history[0][0] == q
+    assert isinstance(reply, str) and reply

@@ -9,7 +9,6 @@
 """
 
 import torch
-import torch.nn.functional as F
 
 from common.config import make_run_config, build_model_config
 from model.layers import (
@@ -428,30 +427,56 @@ def test_rmsnorm_preserves_direction_per_row():
 
 def test_mlp_activation_relu2_vs_gelu():
     """
-    ch13 MLP 的粒度判据：relu2 与 gelu 必须真的不同，且 relu2 保持非负。
+    ch13 MLP 的粒度判据：**同一份权重**下，relu2 与 gelu 必须给出不同结果。
 
     ReLU²(x) = max(0,x)²：x>0 时导数就是 2x，极其便宜。
     GELU(x) = x·Φ(x)：对负数不是恒 0。
+
+    ★ 与旧版的区别：旧版对每种激活各建一个 MLP，然后比较
+      `MLP(cfg).c_fc(x)` 的输出 —— 那有两个致命问题：
+        1) 两次的 MLP 是**不同随机初始化**，输出当然不同，跟激活无关；
+        2) c_fc 只是投影，**根本没施加激活**。
+      结果：把 MLP.forward 改成「无条件 relu2」，测试照样通过。
+      现在只建一个 MLP，只改 self.activation，权重完全不变。
     """
     from common.config import build_model_config
+    torch.manual_seed(0)
     cfg = build_model_config(2, 16, 16, sequence_len=32, vocab_size=64)
+    mlp = MLP(cfg)
     x = torch.randn(2, 8, cfg.n_embd) * 3.0        # 放大到有明显的负数
-    outs = {}
-    for act in ("relu2", "gelu"):
-        cfg.activation = act
-        outs[act] = MLP(cfg).c_fc(x)               # 投影后的 pre-activation
-    r2, gl = outs["relu2"], outs["gelu"]
-    # 两者必须不同（否则 activation 开关根本没生效）
-    assert not torch.allclose(r2, gl), "relu2 和 gelu 的输出完全一样 -> 开关没生效"
-    # relu2 对负输入输出 0，gelu 对负输入不是 0
-    neg = torch.full((1, 1, 4), -1.0)
-    assert torch.allclose(F.relu(neg).square(), torch.zeros_like(neg))
-    assert (F.gelu(neg) < 0).any(), "gelu 对负输入应产生非零输出"
-    # 整条 MLP 在两种激活下都要能跑通
-    for act in ("relu2", "gelu"):
-        cfg.activation = act
-        out = MLP(cfg)(x)
-        assert torch.isfinite(out).all(), f"{act}: MLP 输出非有限"
+
+    # 同一份权重，只切 activation
+    mlp.activation = "relu2"
+    out_r2 = mlp(x).clone()
+    mlp.activation = "gelu"
+    out_gl = mlp(x).clone()
+    assert not torch.allclose(out_r2, out_gl), (
+        "同一份权重下 relu2 与 gelu 输出完全一样 -> forward 里的 "
+        "activation 分支没生效")
+
+    # 未知激活必须报错（else 分支不能省）
+    mlp.activation = "swiglu"
+    try:
+        mlp(x)
+        raise AssertionError("未知 activation 应该报错")
+    except ValueError:
+        pass
+
+    # ── 直接验激活函数的语义（这里才是 relu2 与 gelu 的分水岭）──
+    # 构造一个「c_fc 输出恒为负」的场景：输入全 -1，c_fc 权重全为正
+    # => c_fc(x) = -sum(w) < 0。此时 relu2 应输出 0，gelu 应保留负值。
+    # 注意 use_bias=False 时 c_fc.bias 是 None，所以只用权重构造。
+    neg_in = torch.full((1, 4, cfg.n_embd), -1.0)
+    with torch.no_grad():
+        mlp.c_fc.weight.fill_(1.0 / cfg.n_embd)      # c_fc(-1) = -1
+        mlp.c_proj.weight.fill_(1.0)                  # c_proj(v) = sum(v)
+        mlp.activation = "relu2"
+        z_r2 = mlp(neg_in).clone()
+        mlp.activation = "gelu"
+        z_gl = mlp(neg_in).clone()
+    assert torch.allclose(z_r2, torch.zeros_like(z_r2)), \
+        f"relu2 对全负输入应输出 0，实际 {z_r2}"
+    assert (z_gl < 0).all(), f"gelu 对负输入应保留负值，实际 {z_gl}"
 
 
 def test_meta_device_weights_are_all_finite():
@@ -546,6 +571,8 @@ def test_backout_subtracts_mid_layer_residual():
     model(x, x).backward()
     assert model.backout_lambda.grad is not None, "backout_lambda 没有梯度"
     assert torch.isfinite(model.backout_lambda.grad).all()
+
+
 def test_value_embeds_live_on_alternate_layers():
     """
     ch18 Value Embeddings 的粒度判据。

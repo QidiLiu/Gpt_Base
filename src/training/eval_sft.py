@@ -63,7 +63,7 @@ def eval_mc(model, tokenizer, name, task, n, device):
         ex = task[i]
         # ★ 用 render_chat_prompt，不要用 f-string 拼 "<|user_start|>"。
         #   encode() 走 encode_ordinary，会把特殊 token 切成 12 个普通
-        #   token，与训练时的格式不一致（详见 metrics.render_chat_prompt）。
+        #   token，与训练时的格式不一致（详见 inference/engine.py:render_chat_prompt）。
         ids = render_chat_prompt(tokenizer, ex["messages"][0]["content"])
         # 只喂最后一个位置：RoPE 会按 cache_seqlens 偏移到正确位置，
         # 所以等价于「已经处理了前 len(ids)-1 个 token」

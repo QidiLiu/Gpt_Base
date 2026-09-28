@@ -46,18 +46,15 @@ def build_token_pool(tokenizer, split="train", pool_tokens=4_000_000,
     3) 每篇 text 用 tokenizer.encode(text, prepend=bos) 编码后 pool.extend(...)
     4) 收集够 pool_tokens 就 return
     """
-    raise NotImplementedError(
-        "待实现：build_token_pool ——\n"
-        "  pool, bos = [], tokenizer.get_bos_token_id()\n"
-        "  for path in list_parquet_files(split):\n"
-        "      pf = pq.ParquetFile(path)\n"
-        "      for rg_idx in range(min(pf.num_row_groups, n_row_groups)):\n"
-        "          for text in pf.read_row_group(rg_idx).column('text').to_pylist():\n"
-        "              pool.extend(tokenizer.encode(text, prepend=bos))\n"
-        "              if len(pool) >= pool_tokens: return pool\n"
-        "  return pool\n"
-        "\n"
-        "参考实现：git show solution:scratch/naive_dataloader.py")
+    pool, bos = [], tokenizer.get_bos_token_id()
+    for path in list_parquet_files(split):
+        pf = pq.ParquetFile(path)
+        for rg_idx in range(min(pf.num_row_groups, n_row_groups)):
+            for text in pf.read_row_group(rg_idx).column('text').to_pylist():
+                pool.extend(tokenizer.encode(text, prepend=bos))
+                if len(pool) >= pool_tokens:
+                    return pool
+    return pool
 
 
 def naive_dataloader(tokenizer, batch_size, seq_len, pool, device="cpu", seed=0):
@@ -77,18 +74,14 @@ def naive_dataloader(tokenizer, batch_size, seq_len, pool, device="cpu", seed=0)
     2) 每轮随机取 batch_size 个起点：rng.randrange(0, len(pool) - seq_len - 1)
     3) x = pool[i : i+seq_len]，y = pool[i+1 : i+1+seq_len]，stack 后 yield
     """
-    raise NotImplementedError(
-        "待实现：naive_dataloader ——\n"
-        "  rng = random.Random(seed)\n"
-        "  while True:\n"
-        "      ix = [rng.randrange(0, len(pool) - seq_len - 1) for _ in range(batch_size)]\n"
-        "      x = torch.stack([torch.tensor(pool[i:i+seq_len], dtype=torch.long) for i in ix])\n"
-        "      y = torch.stack([torch.tensor(pool[i+1:i+1+seq_len], dtype=torch.long) for i in ix])\n"
-        "      yield x.to(device), y.to(device)\n"
-        "\n"
-        "  验证：uv run python scratch/naive_dataloader.py\n"
-        "        （污染率应该接近 1.0，而 best-fit 恒为 0）\n"
-        "参考实现：git show solution:scratch/naive_dataloader.py")
+    rng = random.Random(seed)
+    while True:
+        ix = [rng.randrange(0, len(pool) - seq_len - 1) for _ in range(batch_size)]
+        x = torch.stack([torch.tensor(pool[i:i + seq_len], dtype=torch.long)
+                         for i in ix])
+        y = torch.stack([torch.tensor(pool[i + 1:i + 1 + seq_len], dtype=torch.long)
+                         for i in ix])
+        yield x.to(device), y.to(device)
 
 
 # ===========================================================================

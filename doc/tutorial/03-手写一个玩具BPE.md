@@ -374,6 +374,11 @@ sed -i 's/\\p{N}{1,2}/\\p{N}{1,3}/' src/data/tokenizer.py
 rm -rf ~/.cache/gpt_base/tokenizer
 uv run python -m training.train_tokenizer --vocab-size 8192 --shards 1
 # 对比 bytes/token：默认约 3.24，{1,3} 会怎样？
+
+# ⚠ 一定要恢复，否则你的 SPLIT_PATTERN 就被永久改掉了
+cp scratch/tokenizer.py.bak src/data/tokenizer.py
+rm -rf ~/.cache/gpt_base/tokenizer   # 词表也要用原版重训
+uv run python -m training.train_tokenizer --vocab-size 8192 --shards 1
 ```
 
 **预期**：`{1,3}` 的 bytes/token 会**略高**（数字压得更紧），

@@ -346,7 +346,7 @@ class GPT(nn.Module):
             "参考实现：git show solution:src/model/gpt.py")
 
     # =======================================================================
-    # ❗ 采样（卷7 第 39 章）
+    # ❗ 采样（卷7（只读））
     # =======================================================================
     @torch.inference_mode()
     def generate(self, tokens, max_tokens, temperature=1.0, top_k=None, seed=42):

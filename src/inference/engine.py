@@ -137,6 +137,49 @@ def sample_next_token(logits, rng, temperature=1.0, top_k=None):
 
 
 # ===========================================================================
+# 推理侧 prompt 渲染
+# ===========================================================================
+def render_chat_prompt(tokenizer, user_text: str,
+                      system: str | None = None) -> list[int]:
+    """
+    把「一条 user 消息 + 等待 assistant 开口」渲染成 token id 序列。
+
+    返回的序列收在 ``<|assistant_start|>``，调用方 forward 整段之后，
+    decode 追加出来的部分就是 assistant 的回复。
+
+    ── ★ 为什么不能 f-string 拼特殊 token ──────────────────────
+    BPETokenizer.encode() 内部走的是 tiktoken 的 **encode_ordinary**，
+    而 encode_ordinary 的定义就是「**忽略** special tokens」——
+    它会把 "<|user_start|>" 当成普通文本再切一遍。
+
+    实测（8192 词表的真实 tokenizer，文本 "What is 12 * 7?"）：
+
+        错：tokenizer.encode(f"<|user_start|>{q}<|user_end|><|assistant_start|>")
+            -> 34 个 token，特殊 id 8184 **根本没出现**，
+               被切成 [60, 124, 305, 263, 95, 321, ...]
+        对：render_chat_prompt(tok, q)
+            -> 12 个 token，8184 / 8185 / 8186 各出现 1 次
+
+    两边 decode 回文本**完全一样**，所以这个 bug 在日志里看不出来 ——
+    但训练时（render_conversation 用 encode_special）模型只见过 1 个 id，
+    评测时喂 12 个，格式对不上，准确率因此失去意义。
+
+    ── 正确写法 ───────────────────────────────────────────────
+    特殊 token 用 encode_special 逐个取 id，普通文本用 encode 编码，
+    最后把 id 列表拼起来。
+    """
+    S = tokenizer.encode_special
+    ids = [tokenizer.get_bos_token_id()]
+    if system:
+        # system 合并进 user（与 render_conversation 的约定一致）
+        user_text = f"{system}\n\n{user_text}"
+    ids += [S("<|user_start|>")]
+    ids += tokenizer.encode(user_text)
+    ids += [S("<|user_end|>"), S("<|assistant_start|>")]
+    return ids
+
+
+# ===========================================================================
 # 工具调用状态机
 # ===========================================================================
 class _Row:

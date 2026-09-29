@@ -27,11 +27,11 @@ def note(ok, where, msg):
 # 注意：用 pytest 实际 collect 的数量，而不是 `^def test_` 的行数 ——
 # 参数化（@pytest.mark.parametrize）会让 1 个函数收集出多个用例，
 # 两者对不上会让文档里的数字失真。
-CHAPTER_TESTS = {"test_core.py": 18, "test_data.py": 19,
-                 "test_presets.py": 6, "test_optim.py": 12,
+CHAPTER_TESTS = {"test_core.py": 25, "test_data.py": 21,
+                 "test_presets.py": 6, "test_optim.py": 14,
                  "test_metrics.py": 11, "test_checkpoint.py": 15,
                  "test_dataloader_resume.py": 10,
-                 "test_engine.py": 48, "test_tasks.py": 27}
+                 "test_engine.py": 53, "test_tasks.py": 27}
 SOUNDNESS = "test_judging_soundness.py"
 
 
@@ -69,8 +69,9 @@ for p in docs:
                  f"写了「{m.group(1)} 个测试」，实际 {total}（章节判据，不含判据自检）")
 
 # ── 2. pytest 结果声明 ────────────────────────────────────────
-# pytest 的摘要在有失败时是 "44 failed, 7 passed in 1.29s"（failed 在前），
-# 全通过时是 "51 passed in 1.2s"。两种顺序都要认。
+# pytest 的摘要在有失败时是 "58 failed, 111 passed, 7 skipped in 1.29s"
+# （failed 在前），全通过时是 "176 passed, 2 skipped in 12.4s"。
+# 两种顺序都要认。
 chapter_files = [f"tests/{k}" for k in CHAPTER_TESTS]
 
 def _run_pytest():

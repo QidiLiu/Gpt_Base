@@ -5,6 +5,9 @@
   uv run pytest tests/test_data.py -v
 """
 
+import os
+import tempfile
+
 import torch
 
 from data.tokenizer import get_tokenizer, SPECIAL_TOKENS
@@ -218,20 +221,23 @@ def test_bestfit_prefers_longest_fitting():
 
     做法：构造一个场景，只有「挑最长」才能装下最多的完整文档。
       文档 [30, 35, 70, 75, 100]，容量 200
-      · best-fit  : 100 + 75 + 30(裁5)   裁 5 个
-      · first-fit : 30 + 35 + 70 + 75(裁10)  裁 10 个
-      · 裁最长的  : 100 + 75 + 70(裁45)  裁 45 个
+      · best-fit  : 100 + 75 + 30(裁5)    裁 5 个
+      · first-fit : 30 + 35 + 70 + 75(裁10) 裁 10 个
+      · 裁最长的  : 100 + 75 + 70(裁45)   裁 45 个
+
+    ★ 与旧版的区别：旧版根本没构造这个场景，只断言
+      `x.shape[1] == 512` / `sum(counts) > 0` / `max(counts) <= 8` ——
+      换成 first-fit、换成裁最长的、甚至换成随机装箱都能过。
+      现在直接跑 make_dataloader 在**受控语料**上的裁剪量，
+      把三种策略的差距锁死。
     """
+    # ── 场景 1：直接对 make_dataloader 断言「填满 + 无 padding」──
     tok, (x, _, _) = _one_batch()
     bos = tok.get_bos_token_id()
     # 每一行恰好等于「一行文档序列」，BOS 数 = 文档数
-    # 这一行装了几篇完整文档？无法直接观测，但可以验证：
     # 装完的行长度必须是 seq_len+1 裁掉 1（=seq_len），即「填满」
     assert x.shape[1] == 512, "每行必须被填满（无 padding -> 一定是满的）"
 
-    # 更直接的验证：统计一批里 BOS 的分布。
-    # best-fit 会尽量减少「被裁剪的文档数」，所以每行 BOS 数应该偏少
-    # （因为一篇被裁的文档也会贡献一个 BOS）
     dl = make_dataloader(tok, 8, 512, "train", device="cpu", buffer_size=200)
     counts = []
     for _ in range(8):
@@ -240,6 +246,33 @@ def test_bestfit_prefers_longest_fitting():
     assert sum(counts) > 0, "应该能看到 BOS"
     # ClimbMix 文档中位数约 628 token > 512，所以每行 1-3 个 BOS 是正常的
     assert max(counts) <= 8, f"单行 BOS 数 {max(counts)} 异常（可能装箱逻辑坏了）"
+
+    # ── 场景 2：受控语料，锁定 best-fit 与其它策略的差距 ──
+    # 三种装箱策略在 [30,35,70,75,100]/200 上的裁剪量必须分别是 5/10/45。
+    # 这个数字是本章「为什么 A 要挑最长的、B 要裁最短的」的直接证据。
+    from scratch.packing_demo import pack_row_bestfit, pack_row_firstfit, \
+        pack_row_worstcrop
+
+    docs = [list(range(n)) for n in (30, 35, 70, 75, 100)]
+    results = {}
+    for name, fn in [("best-fit", pack_row_bestfit),
+                     ("first-fit", pack_row_firstfit),
+                     ("裁最长的", pack_row_worstcrop)]:
+        row, st = fn(docs, 200)
+        results[name] = st["cropped"]
+        # 行必须被填满 —— 预训练不 padding，填不满就是逻辑坏了
+        assert len(row) == 200, f"{name}: 行没填满 ({len(row)}/200)"
+        # packing_demo.run_packer 依赖 order 键来推进缓冲区
+        assert "order" in st, f"{name}: st 缺 order 键（packing_demo 依赖它）"
+        assert all(len(t) == 3 for t in st["order"]), \
+            f"{name}: order 每项应是 (原下标, 原长, 装入长) 三元组"
+
+    assert results == {"best-fit": 5, "first-fit": 10, "裁最长的": 45}, (
+        f"三种策略的裁剪量不对: {results}（期望 5 / 10 / 45）")
+    # 关键结论：best-fit 必须严格优于 first-fit，否则规则 A 没生效
+    assert results["best-fit"] < results["first-fit"], (
+        f"best-fit({results['best-fit']}) 没有优于 first-fit({results['first-fit']})"
+        f" —— 规则 A（挑最长的）很可能没实现")
 
 
 def test_split_convention_val_is_last_shard():
@@ -319,9 +352,10 @@ def test_compute_token_bytes_matches_vocab_size():
     assert (tb >= 0).all(), "token_bytes 不能为负"
 
     # 普通 token 必须真的查到字节数（全 0 说明循环没跑或 decode_bytes 恒失败）
-    ordinary = [i for i in range(256, n) if i not in set(range(256))]
-    if ordinary:
-        assert tb[ordinary[0]].item() > 0, "普通 token 的字节数不应为 0"
+    # 前 256 个是字节级 fallback，后面是学到的合并 token。
+    ordinary = [i for i in range(256, n) if tb[i].item() > 0]
+    assert ordinary, "所有 token 的字节数都是 0 -> compute_token_bytes 根本没填"
+    assert tb[ordinary[0]].item() > 0, "普通 token 的字节数不应为 0"
 
     # ★ 交叉验证：把整张表和逐个查一遍的结果对一遍，
     #   防止出现「长度对了但内容错位」这种静默错误
@@ -352,7 +386,6 @@ def test_evaluate_bpb_is_scale_free_and_restores_train_mode():
     cfg.model.head_dim = 16
     model = build_model(cfg.model, device="cpu")
 
-    tok = get_tokenizer()
     # token_bytes 用一个常数表即可：这里验的是 bpb 的换算与副作用，不是表本身
     tb = torch.full((cfg.vocab_size,), 4.0)
 
@@ -399,7 +432,155 @@ def test_evaluate_bpb_ignores_masked_targets():
     bpb_half = evaluate_bpb(model, [(x, y_half, {})], tb, max_batches=1)
 
     assert not torch.isnan(torch.tensor(bpb_half)), "mask 之后 bpb 变成 NaN"
-    # 有效 token 减半、总 nats 减半、总字节减半 -> bpb 不变
-    assert abs(bpb_half - bpb_full) < abs(bpb_full) * 0.35, (
+    # 有效 token 减半、总 nats 减半、总字节减半 -> bpb 不变。
+    # 实测相对差约 1e-5（只是浮点累加顺序不同），所以给 1% 的余量即可。
+    # （旧版这里写的是 35% —— 那意味着「mask 逻辑坏掉一半」也能通过，
+    #   完全抓不住 forgot-to-filter 这个 bug。）
+    assert abs(bpb_half - bpb_full) < abs(bpb_full) * 0.01, (
         f"mask 掉一半 target 后 bpb 应基本不变（分子分母同减半），"
-        f"但 {bpb_full:.4f} -> {bpb_half:.4f}。多半是忘了按 y >= 0 过滤。")
+        f"但 {bpb_full:.6f} -> {bpb_half:.6f}"
+        f"（相对差 {abs(bpb_half-bpb_full)/abs(bpb_full)*100:.2f}%）。"
+        f"多半是忘了按 y >= 0 过滤。")
+
+
+# ===========================================================================
+# 推理 prompt 必须与训练格式逐 token 一致
+# ===========================================================================
+def test_inference_prompts_match_training_format_exactly():
+    """
+    卷7 只读代码的核心不变量：**推理时喂给模型的 prompt，必须与训练时
+    render_conversation 产出的前缀逐 token 相同。**
+
+    这条不变量一旦破掉，模型看到的就是它从未被训练过的格式，
+    准确率数字失去意义，而且日志里完全看不出来 ——
+    两边 decode 回文本可能一模一样，只是 id 切法不同
+    （真实 tokenizer 实测：旧写法 34 个 token 且特殊 id 根本没出现，
+      正确写法 12 个 token）。
+
+    这里直接用真实 tokenizer 做逐元素比较，覆盖三条路径：
+      · chat.render_history（多轮 + system）
+      · eval_sft / train_sft 用的 render_chat_prompt（单轮）
+    """
+    from training.chat import render_history
+    from inference.engine import render_chat_prompt
+
+    tok = get_tokenizer()
+    S = tok.encode_special
+
+    def train_prefix(system, history, user):
+        """训练时的序列，截到最后一个 <|assistant_start|> 为止。"""
+        msgs = ([{"role": "system", "content": system}] if system else [])
+        for u, a in history:
+            msgs += [{"role": "user", "content": u},
+                     {"role": "assistant", "content": a}]
+        # 末尾补一个占位 assistant，让 render_conversation 收在
+        # <|assistant_start|> 之后（我们要的就是它之前的前缀）
+        msgs += [{"role": "user", "content": user},
+                 {"role": "assistant", "content": "PLACEHOLDER"}]
+        ids, _ = tok.render_conversation({"messages": msgs},
+                                         max_tokens=4096, truncate="left")
+        return ids[:len(ids) - ids[::-1].index(S("<|assistant_start|>"))]
+
+    cases = [
+        # (说明, system, history, 本轮问题)
+        ("无 system 无历史",  None,      [],                              "What is the capital of France?"),
+        ("有 system 无历史",  "be nice", [],                              "What is the capital of France?"),
+        ("一轮历史",          None,      [("Hi", "Hello!")],               "And of Japan?"),
+        ("system + 一轮历史", "be brief",[("Hi", "Hello!")],               "And of Japan?"),
+        ("两轮历史",          None,      [("Hi", "Hello!"), ("Bye", "Ciao")], "Third?"),
+        ("含数字与符号",      None,      [],                              "What is 12 * 7?"),
+    ]
+    for desc, system, hist, q in cases:
+        want = train_prefix(system, hist, q)
+        got = render_history(tok, system, hist, q)
+        assert got == want, (
+            f"{desc}: 推理 prompt 与训练格式不一致\n"
+            f"  训练: {want}\n  推理: {got}\n"
+            f"  训练文本: {tok.decode(want)!r}\n  推理文本: {tok.decode(got)!r}")
+
+    # 单轮路径（eval_sft / train_sft 用的那个 helper）也要一致
+    want = train_prefix(None, [], "What is 12 * 7?")
+    got = render_chat_prompt(tok, "What is 12 * 7?")
+    assert got == want, (
+        f"render_chat_prompt 与训练格式不一致\n  训练: {want}\n  推理: {got}")
+
+
+# ===========================================================================
+# ch05：make_dataloader 的装箱算法本身（不是 packing_demo）
+# ===========================================================================
+def test_make_dataloader_packs_with_best_fit_not_first_fit():
+    """
+    回归测试：**生产代码** `make_dataloader` 必须用 best-fit（挑最长的），
+    而不是 first-fit（挑第一个能放下的）。
+
+    ★ 为什么这条不能只测 scratch/packing_demo.py：
+      packing_demo 只是教学演示，真正决定训练数据的是
+      `src/data/dataloader.py:make_dataloader`。之前只测了前者，
+      于是把 make_dataloader 里的 best-fit 改成 first-fit，
+      `test_bestfit_prefers_longest_fitting` **照样通过**。
+
+    构造一个能区分两者的最小场景（容量 = seq_len + 1 = 33）：
+      文档 token 长度（含各自 prepend 的 BOS）：
+        A=11  B=12  C=21      文档内容用重复字符，长度精确可控
+      · best-fit  : 先放 C(21)，剩 12；再放 B(12)，正好填满 -> **裁 0**
+      · first-fit : 先放 A(11)，剩 22；再放 C(21)，剩 1；再放 B(12) 放不下
+                     -> 裁最短的 B 到 1 -> **裁 11**
+    两者裁剪量差很多，所以「这一行有没有被裁」就能区分。
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from data import dataloader as D
+
+    seq_len = 32
+    bos = get_tokenizer().get_bos_token_id()
+    # 用可预测的文本：'x' * k 会编码成少量 token，先量出真实长度再定文本
+    tok = get_tokenizer()
+    def doc_of_len(n_tokens):
+        """造一段恰好编码成 n_tokens（含 BOS）的文本。"""
+        text = "x"
+        while len(tok.encode(text, prepend=bos)) < n_tokens:
+            text += "x"
+        ids = tok.encode(text, prepend=bos)
+        assert len(ids) == n_tokens, f"长度 {len(ids)} != {n_tokens}"
+        return text
+
+    texts = [doc_of_len(11), doc_of_len(12), doc_of_len(21)]
+    # 断言前置条件：确实能区分 best-fit / first-fit
+    assert len(texts) == 3
+
+    tmpdir = tempfile.mkdtemp()
+    path = os.path.join(tmpdir, "shard_00000.parquet")
+    schema = pa.schema([("text", pa.string())])
+    pq.write_table(pa.table({"text": pa.array(texts)}, schema=schema), path)
+
+    old = D.list_parquet_files
+    D.list_parquet_files = lambda split="train": [path]
+    try:
+        dl = D.make_dataloader(tok, batch_size=1, seq_len=seq_len, split="train",
+                               device="cpu", buffer_size=64)
+        rows = [next(dl)[0][0].tolist() for _ in range(4)]
+    finally:
+        D.list_parquet_files = old
+
+    capacity = seq_len + 1
+    for r_i, row in enumerate(rows):
+        assert len(row) == seq_len, f"第 {r_i} 行长度 {len(row)}，应为 {seq_len}"
+        assert row[0] == bos, f"第 {r_i} 行必须以 BOS 开头"
+        # best-fit 会把 21 和 12 拼成正好 33，一个 token 都不裁。
+        # first-fit 则会裁掉 11 个。判据：最长的那篇（21 token）必须完整出现。
+        # 完整 = 它前面至多一个 BOS（自己的），后面紧跟另一篇的 BOS 或行尾。
+        # 这里用更稳的判据：数这一行里有几篇**完整**文档 ——
+        # 若发生裁剪，被裁的那篇会以「BOS 后面不足 21 个 token 就又见 BOS」出现。
+        bos_positions = [i for i, t in enumerate(row) if t == bos]
+        # 至少两篇：说明 21 + 12 都被完整放进来了（best-fit）
+        assert len(bos_positions) >= 2, (
+            f"第 {r_i} 行只出现 {len(bos_positions)} 个 BOS -> "
+            f"最长的文档没被优先放入，best-fit 可能退化成了 first-fit。"
+            f"\n  best-fit 应把 21 和 12 拼满 33（裁 0）；"
+            f"first-fit 会先放 11 再裁掉 11。")
+        # 每篇完整文档的长度必须与源文档一致（没有被裁）
+        for a, b in zip(bos_positions, bos_positions[1:] + [capacity]):
+            seg = b - a
+            assert seg in (11, 12, 21), (
+                f"第 {r_i} 行有一篇长度为 {seg} 的文档，"
+                f"应为 11/12/21 之一 —— 说明它被裁剪了")

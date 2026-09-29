@@ -60,7 +60,7 @@ def toy_bpe(text: str, num_merges: int = 20) -> list[tuple[str, str, int]]:
         "\n"
         "  验证：uv run python scratch/toy_bpe.py\n"
         "参考实现：git show solution:scratch/toy_bpe.py")
-    return history
+    # ↑ 上面 raise 之后不会执行到这里；真实实现里这一行是 `return history`。
 
 
 if __name__ == "__main__":

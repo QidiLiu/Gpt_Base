@@ -99,7 +99,7 @@ def orthogonalize_simple(G: torch.Tensor, steps: int = 5) -> torch.Tensor:
     uv run pytest -k orthogonalize -v
       · test_orthogonalize_improves_orthogonality
         正交误差 ||X·Xᵀ - I||_F / ||X·Xᵀ||_F 必须显著变小
-    uv run python scratch/ortho_demo.py   （自己写，见 tutorial 第 23 章）
+    uv run python scratch/ortho_demo.py   （可直接跑，看谱怎么被压平）
     """
     raise NotImplementedError(
         "待实现：orthogonalize_simple —— 五步，见 docstring\n"

@@ -12,7 +12,6 @@
 跑法：uv run pytest tests/test_engine.py -v
 """
 
-import types
 
 import pytest
 import torch
@@ -36,6 +35,12 @@ class ScriptedModel:
 
     `script` 是一个 token id 列表：每被 forward 一次就吐下一个，
     用完则重复最后一个。这样状态机的每一步都是确定的。
+
+    ★ forward 必须真的推进 kv_cache（与 GPT.forward 的行为一致：
+      最后一层调 kv_cache.advance(T)）。以前这个假模型不推进，
+      于是 test_cache_capacity_exactly_fits 观察到的
+      cache_lens_seen 恒为 [0,0,0,...]，「写指针没越界」这个断言
+      退化成 0 < N 的恒真式，容量上限从未被检验。
     """
 
     def __init__(self, script, vocab=128):
@@ -44,15 +49,20 @@ class ScriptedModel:
         self.vocab = vocab
         self.n_calls = 0
         self.cache_lens_seen = []
+        self.positions_written = []      # 真正写进 cache 的绝对位置
 
     def get_device(self):
         return "cpu"
 
     def forward(self, ids, kv_cache=None):
         self.n_calls += 1
-        if kv_cache is not None:
-            self.cache_lens_seen.append(int(kv_cache.get_pos()))
         B, T = ids.shape
+        if kv_cache is not None:
+            pos = kv_cache.get_pos()
+            self.cache_lens_seen.append(pos)
+            # 与真模型一致：写入 [pos, pos+T) 后推进 T
+            self.positions_written.extend(range(pos, pos + T))
+            kv_cache.advance(T)
         out = torch.full((B, T, self.vocab), -10.0)
         tok = self.script[min(self.n_calls - 1, len(self.script) - 1)]
         out[:, -1, tok] = 10.0          # 极大 logit -> argmax 必选它
@@ -72,6 +82,9 @@ class FakeTokenizer:
     OUT_START = 4
     OUT_END = 5
     ASST_END = 6
+    USER_START = 7
+    USER_END = 8
+    ASST_START = 9
     FIRST_PLAIN = 10
 
     def get_bos_token_id(self):
@@ -85,6 +98,9 @@ class FakeTokenizer:
             "<|output_start|>": self.OUT_START,
             "<|output_end|>": self.OUT_END,
             "<|assistant_end|>": self.ASST_END,
+            "<|user_start|>": self.USER_START,
+            "<|user_end|>": self.USER_END,
+            "<|assistant_start|>": self.ASST_START,
         }[name]
 
     def encode(self, text):
@@ -394,6 +410,12 @@ def test_cache_capacity_exactly_fits():
 
     工具强制注入的 token 也占一格（它们同样要 forward 进去），
     所以不会超出这个预算。越界会在 attention 里静默读到垃圾。
+
+    ★ 与旧版的区别：旧版只断言 `max(positions) < budget`，而当时的
+      ScriptedModel 根本不调 advance()，positions 恒为 [0,0,0,...]，
+      断言退化成 0 < 11 的恒真式。现在 ScriptedModel 会真的推进 cache，
+      并且额外断言「写入位置严格递增、覆盖满预算、且不重复写同一格」——
+      后者能抓住「指针没推进导致每次都覆盖位置 0」这个真实缺陷。
     """
     prompt = [70, 71, 72]
     max_tokens = 8
@@ -401,11 +423,25 @@ def test_cache_capacity_exactly_fits():
     eng = Engine(m, FakeTokenizer())
     out = list(eng.generate(prompt, num_samples=1, max_tokens=max_tokens,
                             temperature=0.0, use_tools=False))
-    positions = m.cache_lens_seen
-    assert positions, "应至少 forward 过一次"
-    assert max(positions) < len(prompt) + max_tokens, (
-        f"cache 写指针越界：{max(positions)} >= {len(prompt) + max_tokens}")
+    budget = len(prompt) + max_tokens
+
+    # prefill 一次 + 每步 decode 一次 => max_tokens + 1 次 forward
     assert len(out) == max_tokens
+    assert m.n_calls == max_tokens + 1, (
+        f"forward 次数应为 prefill(1) + decode({max_tokens})，实际 {m.n_calls}")
+
+    # 写指针必须**真的在动**：从 prefill 后的 3 开始，每步 +1
+    assert m.cache_lens_seen[0] == 0, "prefill 应从位置 0 开始"
+    assert m.cache_lens_seen[1] == len(prompt), (
+        f"第二次 forward 位置应是 {len(prompt)}，实际 {m.cache_lens_seen[1]}"
+        f" —— cache_seqlens 没有被 advance()")
+    assert m.cache_lens_seen == sorted(m.cache_lens_seen), "写指针必须单调递增"
+
+    # 每个位置只写一次，且不越界
+    assert len(set(m.positions_written)) == len(m.positions_written), (
+        f"同一位置被写了多次: {sorted(m.positions_written)}")
+    assert max(m.positions_written) < budget, (
+        f"cache 写指针越界：{max(m.positions_written)} >= {budget}")
 
 
 def test_prompt_prefill_then_expand_does_n_samples_forward_once():
@@ -458,3 +494,157 @@ def test_generate_batch_multiple_samples_same_length():
     assert len(results) == 3 and len(masks) == 3
     for r in results:
         assert len(r) == 1 + 4, f"每行应是 prompt(1) + 生成(4)，实际 {r}"
+
+
+# ===========================================================================
+# render_chat_prompt —— 训练/推理的 token 级一致性
+# ===========================================================================
+def test_render_chat_prompt_uses_real_special_tokens():
+    """
+    回归测试：推理侧渲染 prompt 时，特殊 token 必须是**单个** id。
+
+    曾经的 bug：eval_sft / train_sft 用
+        ids = tokenizer.encode(f"<|user_start|>{q}<|user_end|><|assistant_start|>")
+    而 encode() 走 tiktoken 的 encode_ordinary，它**按定义忽略**
+    special tokens，会把 "<|user_start|>" 当普通文本再切一遍。
+    实测（8192 词表真实 tokenizer，文本 "What is 12 * 7?"）：
+        错 -> 34 个 token，特殊 id 8184 根本没出现
+        对 -> 12 个 token，8184/8185/8186 各出现 1 次
+    两边 decode 回文本完全一样，所以这个 bug 在日志里看不出来。
+    """
+    from inference.engine import render_chat_prompt
+
+    tk = FakeTokenizer()
+    ids = render_chat_prompt(tk, "hi")
+
+    assert ids[0] == tk.BOS, "必须以 BOS 开头"
+    for name in ("<|user_start|>", "<|user_end|>", "<|assistant_start|>"):
+        assert tk.encode_special(name) in ids, f"缺 {name}"
+    # BOS + user_start + "hi" 2 个字符 + user_end + assistant_start
+    assert len(ids) == 1 + 1 + 2 + 1 + 1, f"prompt 长度不对: {len(ids)} -> {ids}"
+    # 序列必须收在 <|assistant_start|>，之后才是模型的输出
+    assert ids[-1] == tk.ASST_START
+    # ★ 关键断言：encode_special 返回的 id 必须**原样**出现在序列里，
+    #   而不是被拆成一串普通 token。
+    assert ids.count(tk.USER_START) == 1, "user_start 被拆开了 -> 用了 f-string 拼接"
+
+
+def test_render_chat_prompt_merges_system_into_user():
+    """system 应该合并进 user 消息，而不是自己占一段 user/assistant 对话。"""
+    from inference.engine import render_chat_prompt
+
+    tk = FakeTokenizer()
+    ids = render_chat_prompt(tk, "hi", system="be nice")
+    # 只有一个 user 段，不该出现 assistant_end
+    assert tk.ASST_END not in ids, "system 被渲染成了一段对话"
+    # system 与 user 都在，且都在 user_start 之后 / user_end 之前
+    lo, hi_ = ids.index(tk.USER_START), ids.index(tk.USER_END)
+    body = ids[lo + 1:hi_]
+    assert len(body) == len("be nice\n\nhi"), f"system+user 文本不对: {body}"
+
+
+def test_render_history_puts_the_question_in_the_prompt():
+    """
+    回归测试：`render_history` 必须把本轮 user_text 放进 prompt。
+
+    曾经的 bug：`ask(user_text)` 调的是 `render_history(tok, system, history)`
+    —— user_text 根本没传下去，它只在生成完回复后进了 history.append。
+    于是模型收到的是
+        <|bos|><|user_start|><|user_end|><|assistant_start|>
+    一个**空的 user 轮**，模型在凭空回答，`bash script/chat.sh` 完全不可用。
+    而且这个函数此前**零测试覆盖**，所以一直没被发现。
+    """
+    from training.chat import render_history
+
+    tk = FakeTokenizer()
+    q = "What is the capital of France?"
+    ids = render_history(tk, None, [], q)
+
+    # 问题必须真的在 prompt 里，而且夹在 user_start / user_end 之间
+    assert tk.USER_START in ids, "缺 <|user_start|>"
+    assert tk.USER_END in ids, "缺 <|user_end|>"
+    lo, hi = ids.index(tk.USER_START), ids.index(tk.USER_END)
+    body = ids[lo + 1:hi]
+    assert body, "user 轮是空的 —— 问题没进 prompt！"
+    # 收在 <|assistant_start|>，之后才是模型的输出
+    assert ids[-1] == tk.ASST_START, f"应以 <|assistant_start|> 收尾，实际 {ids[-1:]}"
+    # 且不能出现空的 user 轮
+    assert hi == lo + 1 + len(q), f"user 轮长度 {hi-lo-1}，应等于问题长度 {len(q)}"
+
+
+def test_render_history_keeps_prior_turns_and_merges_system():
+    """
+    多轮时历史必须完整保留；system 合并进**第一条** user 消息
+    （与 render_conversation 的约定一致：实测 system + "\n\n" + 首条 user）。
+    """
+    from training.chat import render_history
+
+    tk = FakeTokenizer()
+    hist = [("Hi", "Hello!"), ("Bye", "Ciao")]
+    ids = render_history(tk, "be brief", hist, "Third?")
+
+    # 两条历史各自的 assistant 段都在
+    assert ids.count(tk.ASST_END) == 2, "历史 assistant 段丢了"
+    # 3 个 user 轮 = 2 条历史 + 本轮（system 不单独占一轮）
+    assert ids.count(tk.USER_START) == 3, \
+        f"应有 3 个 user 轮（2 条历史 + 本轮），实际 {ids.count(tk.USER_START)}"
+    # 最后一个 user 轮的内容恰好是本轮问题，之后收在 <|assistant_start|>
+    start = len(ids) - 1 - ids[::-1].index(tk.USER_START)   # 最后一个 <|user_start|>
+    end = ids.index(tk.USER_END, start)                     # 它后面的 <|user_end|>
+    body = ids[start + 1:end]
+    assert len(body) == len("Third?"), \
+        f"本轮 user 内容长度 {len(body)}，应为 {len('Third?')}（问题必须完整进 prompt）"
+    assert end + 1 == len(ids) - 1 and ids[-1] == tk.ASST_START, \
+        "最后一个 user 轮之后应紧跟 <|assistant_start|>"
+
+
+def test_ask_sends_the_question_to_the_engine():
+    """
+    回归测试：**真正送进 Engine 的 ids 里必须含有用户的问题。**
+
+    这条比「直接调 render_history」强得多 —— 之前的 bug 不在
+    render_history 本身，而在**调用点**：ask(user_text) 调的是
+    `render_history(tok, system, history)`，user_text 压根没传下去。
+    只测 render_history 的话，这个 bug 照样能通过（实测过）。
+
+    这里用一个假的 Engine 记录收到的 ids，断言：
+      1) ids 里含有问题的内容
+      2) 收在 <|assistant_start|>（之后才是模型的输出）
+      3) history 里正确追加了 (user_text, reply)
+    """
+    from training.chat import ask
+
+    tk = FakeTokenizer()
+    q = "What is the capital of France?"
+
+    class SpyEngine:
+        def __init__(self):
+            self.seen = None
+        def generate_batch(self, ids, **kw):
+            self.seen = list(ids)
+            # 假装生成了 3 个 token
+            n = len(ids)
+            return [ids + [tk.FIRST_PLAIN + i for i in range(3)]], [[0] * (n + 3)]
+
+    eng = SpyEngine()
+    history = []
+    reply = ask(eng, tk, history, q)
+
+    assert eng.seen is not None, "Engine 没被调用"
+    # 问题必须在 prompt 里：夹在最后一个 user 轮中
+    assert tk.USER_START in eng.seen, f"prompt 里没有 <|user_start|>：{eng.seen}"
+    start = len(eng.seen) - 1 - eng.seen[::-1].index(tk.USER_START)
+    assert tk.USER_END in eng.seen[start:], (
+        f"<|user_start|> 之后没有 <|user_end|>：{eng.seen}\n"
+        f"★ 这正是那个 bug 的样子 —— user_text 没传进 render_history，"
+        f"prompt 收在 <|user_start|> 就停了，模型看到的是空 user 轮。")
+    end = eng.seen.index(tk.USER_END, start)
+    body = eng.seen[start + 1:end]
+    assert len(body) == len(q), (
+        f"送进 Engine 的 user 轮长度 {len(body)}，应为 {len(q)} —— "
+        f"问题没进 prompt（这是 chat.sh 不可用的根因）")
+    # 收在 <|assistant_start|>
+    assert eng.seen[-1] == tk.ASST_START
+    # history 正确追加
+    assert len(history) == 1 and history[0][0] == q
+    assert isinstance(reply, str) and reply

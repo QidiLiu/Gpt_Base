@@ -307,6 +307,12 @@ def attend_with_kvcache(q, k_cache, v_cache, k, v, kv_cache, window):
         「已填长度 + 本次新增」。尾部是未初始化数据，
         读了会「看到未来」。
 
+    (2b) ★ 本函数**只读** cache_seqlens，不推进它。
+        推进由调用方（CausalSelfAttention.forward）在**最后一层**
+        统一做一次：kv_cache.advance(T)。
+        如果这里自己 advance，或者每层都 advance，n_layer 层就会
+        推进 n_layer 次 —— 各层写到不同位置，attention 读到别人的 k/v。
+
     (3) causal 参数传什么？
         提示：这里传 False。因为因果性已经由「只取 0..S-1 且 S 正好
         等于当前位置+1」保证了。
@@ -331,6 +337,9 @@ def attend_with_kvcache(q, k_cache, v_cache, k, v, kv_cache, window):
         "  gqa = (q.size(2) != kk.size(2))\n"
         "  全上下文 -> sdpa_bt(q, kk, vv, causal=False, gqa=gqa)\n"
         "  滑窗 -> 构造 (B,Tq,S) 的 mask 再 sdpa_bt(...)\n"
+        "  ★ 本函数**不推进** cache_seqlens！推进由调用方\n"
+        "    CausalSelfAttention.forward 在最后一层做一次 kv_cache.advance(T)。\n"
+        "    漏掉的话生成结果像胡言乱语但没有任何报错（见上面 (2b)）。\n"
         "参考实现：git show solution:src/model/layers.py")
 
 
@@ -424,6 +433,26 @@ class CausalSelfAttention(nn.Module):
         ve      Value Embedding（(B,T,kv_dim)），仅当 use_value_embeds 开启
 
         返回 (B,T,D)
+
+        ── ★ KV cache：谁负责推进写指针？─────────────────────
+        attend_with_kvcache 只**读** kv_cache.cache_seqlens 来定位写入位置，
+        它自己不推进。推进必须由本函数负责，而且**只能在最后一层做一次**：
+
+            if self.layer_idx == kv_cache.n_layers - 1:
+                kv_cache.advance(T)
+
+        为什么必须是最后一层？
+          每一层都要把本层的 k/v 写到 cache 的同一个位置（pos 由
+          cache_seqlens 决定，所有层共享）。如果每层都 advance，
+          n_layer 层就会推进 n_layer 次，写指针直接跑飞，
+          而且各层写到的位置互不相同 —— attention 读到的是别人的 k/v。
+          只有最后一层 advance 一次，才能保证「所有层写完，指针恰好前进 T」。
+
+        漏了这一步会怎样？
+          cache_seqlens 恒为 0 -> 每次 decode 都写到位置 0，
+          有效长度 S 恒等于 1 -> 模型永远只看得见自己那一个 token。
+          症状是「生成出来的东西像胡言乱语，但没有任何报错」。
+          验证：uv run pytest -k kv_cache_prefill -v
         """
         raise NotImplementedError(
             "待实现：CausalSelfAttention.forward ——\n"
@@ -441,7 +470,12 @@ class CausalSelfAttention(nn.Module):
             "         q = rms_norm(q) * self.qk_norm_scale\n"
             "         k = rms_norm(k) * self.qk_norm_scale\n"
             "  5) kv_cache is None -> attend(q,k,v,window)\n"
-            "     否则 -> attend_with_kvcache(q, kc, vc, k, v, kv_cache, window)\n"
+            "     否则：\n"
+            "         kc, vc = kv_cache.get_layer(self.layer_idx)\n"
+            "         y = attend_with_kvcache(q, kc, vc, k, v, kv_cache, window)\n"
+            "         ★★ 别漏了这一步（见上面 docstring 的「谁负责推进写指针」）：\n"
+            "         if self.layer_idx == kv_cache.n_layers - 1:\n"
+            "             kv_cache.advance(T)\n"
             "  6) return self.c_proj(y.contiguous().view(B, T, self.d_model))\n"
             "参考实现：git show solution:src/model/layers.py")
 
@@ -470,7 +504,6 @@ class MLP(nn.Module):
 
     def __init__(self, cfg, device=None):
         super().__init__()
-        d = cfg.n_embd
         self.activation = cfg.activation
         # ❗ 两行
         raise NotImplementedError(

@@ -128,51 +128,17 @@ def download_tiny_shakespeare() -> str:
 
 
 # ===========================================================================
-# ❗ 要你敲的部分 2
+# load_hub_dataset —— 已由 data/tasks.py 实现，这里只做转发
 # ===========================================================================
-def load_hub_dataset(repo_id: str, subset: str = "default", split: str = "train",
-                     max_shards: int = None):
-    """
-    极简版 load_dataset，替代 HuggingFace datasets。
-
-    流程：调 Hub 的 parquet 导出 API 列出分片 -> 下载 -> 用 pyarrow 读 -> concat。
-
-    ── 你要想清楚的四个点 ──────────────────────────────
-
-    (1) 为什么要自己写，而不用 datasets？
-        完整版 datasets 有 30+ 个传递依赖。nanochat 把它整个删了
-        （commit: "delete datasets dependency bye"）。我们只需要
-        len / __getitem__ / shuffle 三个方法，几十行就够，
-        还能顺便看清「打乱」到底怎么实现的。
-
-    (2) 下载完成的标记怎么设计？
-        提示：不要用「文件存在」判断（可能只下了一半）。
-        要写一个 manifest.json **最后**写 —— 它的存在就代表下载完成。
-
-    (3) 国内网络要绕哪两个坑？
-        a) 必须显式带 User-Agent，否则镜像返回 403
-           （Python 内置 urllib 的默认 UA 会被拒）
-        b) 镜像返回的分片 URL 指向 huggingface.co，而那个域名本机不可达，
-           **必须重写到 HF_ENDPOINT**
-
-    (4) max_shards 是干什么的？
-        SmolTalk 有 9 片共约 2 GB。SFT 只需要一小部分数据，
-        smoke 档只取 1 片（224 MB）就够，省 4 分钟下载。
-    """
-    raise NotImplementedError(
-        "待实现：load_hub_dataset ——\n"
-        "  1) slug = repo_id.replace('/', '--'); d = os.path.join(get_task_dir(), slug, subset, split)\n"
-        "     manifest = os.path.join(d, 'manifest.json')\n"
-        "  2) if not os.path.exists(manifest):\n"
-        "       os.makedirs(d, exist_ok=True)\n"
-        "       requests.get(f'{HF_ENDPOINT}/api/datasets/{repo_id}/parquet/{subset}/{split}',\n"
-        "                    headers={'User-Agent': 'python-requests/gpt-base'}).json()\n"
-        "       逐个 download_file(u.replace('https://huggingface.co', HF_ENDPOINT), ...)\n"
-        "       最后 json.dump(names, open(manifest,'w'))\n"
-        "  3) 读回 names，若 max_shards 不为 None 则截断\n"
-        "  4) pq.read_table 每个文件 -> pa.concat_tables -> HubDataset(table)\n"
-        "  提示：HubDataset 类在 data/tasks.py 里\n"
-        "参考实现：git show solution:src/data/dataset.py")
+# ⚠ 这里**不再**手抄一份。data/tasks.py 里已经有一份完整实现
+#   （卷7 只读代码），SFT / 评测的所有调用方都用那一份。
+#   之前 dataset.py 里也有一份骨架，语义完全重复，且**没有任何地方 import 它**
+#   —— 属于纯粹的死代码：写完也不会被调用，只会让读者困惑
+#   「到底哪个才是真的」。所以改成一行转发。
+#
+# 如果你想读它的实现（了解 manifest 标记、User-Agent、URL 重写这三件事），
+# 看 data/tasks.py:load_hub_dataset，注释更全。
+from data.tasks import load_hub_dataset  # noqa: E402,F401
 
 
 # ===========================================================================

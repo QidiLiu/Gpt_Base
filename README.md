@@ -30,7 +30,7 @@ bash script/progress.sh          # 看你现在该做哪一章
 
 手抄总量约 2100 行 / 8-11 小时。
 
-## 五个入口脚本
+## 六个入口脚本
 
 手敲完卷 1-4 之前它们跑不通（依赖你还没实现的部分）。
 之后：
@@ -58,8 +58,8 @@ src/
 └── evaluation/   评测：bpb / 多选 loglikelihood / pass@k               → 卷7
 script/           6 个入口脚本（train_base / eval_base / train_sft / eval_sft / chat / progress）
 doc/tutorial/     教程（7 章已写：卷0 准备 + 卷1 数据；卷 2-8 待补）
-scratch/          11 个实验脚本
-tests/            166 个测试，每章的完成判据（另加 1 个判据自检文件）
+scratch/          12 个实验脚本
+tests/            182 个测试，每章的完成判据（另加 10 个判据自检，共 192）
 ```
 
 ## 看答案

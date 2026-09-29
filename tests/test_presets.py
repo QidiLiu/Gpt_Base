@@ -4,6 +4,8 @@
   uv run pytest tests/test_presets.py -v
 """
 
+import pytest
+
 from common.config import (
     make_run_config, resolve_scaling, estimate_flops_per_token,
     build_model_config, scaling_params, ModelConfig,
@@ -18,7 +20,6 @@ def test_presets_are_self_consistent():
     sequence_len=1024 -> 24*1024 = 24576 整除不了 65536。
     resolve_scaling 里的 assert 当场抓住了它。
     """
-    from common.config import resolve_scaling
     for mode, V in [("debug", 8192), ("smoke", 8192), ("full", 16384)]:
         cfg = make_run_config(mode, vocab_size=V)
         sc = resolve_scaling(cfg, log=lambda *a: None)
@@ -86,19 +87,22 @@ def test_window_sizes_respect_pattern():
     for i in (2, 5):
         assert sizes[i][0] == 2048, f"第 {i} 层应该是全上下文"
     # 非法字符必须报错
-    try:
+    #
+    # ⚠ 这里必须用 pytest.raises，不能手写 try/except + raise AssertionError。
+    #   被测代码抛的正是 AssertionError，手抛的那个会被同一个 except 吞掉：
+    #       try:
+    #           ModelConfig(...).window_sizes()
+    #           raise AssertionError("非法 ...")   # 永远到不了 except 之外
+    #       except AssertionError as e:
+    #           if "非法" not in str(e): raise      # 消息里有"非法" -> 永不重抛
+    #   也就是说「校验被删掉」时这个测试照样绿。实测：把 config.py 的 assert
+    #   换成静默强制转换，本测试 6 passed。
+    with pytest.raises(AssertionError, match="非法"):
         ModelConfig(window_pattern="XY").window_sizes()
-        raise AssertionError("非法 window_pattern 应该被 assert 拦住")
-    except AssertionError as e:
-        if "非法" not in str(e):
-            raise
 
 
 def test_unknown_override_raises():
     """拼错配置项名要立刻报错，不能静默忽略。"""
-    try:
+    # 同上：用 pytest.raises，让「没报错」直接变成失败。
+    with pytest.raises(ValueError, match="未知的配置项"):
         make_run_config("debug", vocab_size=64, lrr=0.1)
-        raise AssertionError("未知配置项应该被拒绝")
-    except ValueError as e:
-        if "未知的配置项" not in str(e):
-            raise

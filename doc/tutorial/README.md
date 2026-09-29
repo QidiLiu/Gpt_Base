@@ -35,7 +35,7 @@ NotImplementedError: 待实现：attend —— 见 docstring 的三步
 
 | 路线 | 做法 | 适合 |
 |---|---|---|
-| **A. 跟敲（推荐）** | 照着 `raise` 消息 + 教程概念部分自己实现，跑通判据再往下走 | 想真正理解，卷1-4 约 8-10 小时 |
+| **A. 跟敲（推荐）** | 照着 `raise` 消息 + 教程概念部分自己实现，跑通判据再往下走 | 想真正理解，卷1-4 约 8-11 小时 |
 | **B. 通读** | `git checkout solution` 拿到完整实现，直接读 | 只想建立全貌，3-4 小时 |
 
 **「手抄」的适用范围是有原则的**，不是「全部都抄」：
@@ -143,33 +143,33 @@ src/
 ### 卷 2 · 模型：tensor 怎么变成 logits　✍ 手抄
 | 章 | 标题 | 完成判据指向 |
 |---|---|---|
-| 🚧 07 | 先跑通一个最小 GPT | `-k uniform or causal` |
-| 🚧 08 | RMSNorm | `-k uniform` |
+| 🚧 07 | 先跑通一个最小 GPT | `-k uniform or loss_reduction or ignore or causal` |
+| 🚧 08 | RMSNorm | `-k rmsnorm` |
 | 🚧 09 | **RoPE 旋转位置编码** | `-k rope` |
 | 🚧 10 | 注意力三步曲 | `-k attend or sliding` |
 | 🚧 11 | SDPA 与 FlashAttention | `-k sdpa` ★ 有个大坑 |
-| 🚧 12 | QK Norm 与 GQA | `-k attend` |
-| 🚧 13 | MLP 与激活函数 | `-k uniform` |
+| 🚧 12 | QK Norm 与 GQA | `-k sdpa or attend` |
+| 🚧 13 | MLP 与激活函数 | `-k mlp_activation` |
 | 🚧 14 | 残差流与 Pre-LN | `-k causal` |
 | 🚧 15 | 权重绑定与 logit softcap | `-k sampling or topk` |
 
 ### 卷 3 · nanochat 的架构 trick　✍ 手抄
 | 章 | 标题 | 完成判据指向 |
 |---|---|---|
-| 🚧 16 | **meta device 三步建模型** | `-k uniform` ★ 有个 NaN 坑 |
-| 🚧 17 | resid_lambdas 与 x0_lambdas | `-k all_tricks` |
-| 🚧 18 | Value Embeddings 与门控 | `-k all_tricks` |
-| 🚧 19 | Smear 与 Backout | `-k all_tricks` |
+| 🚧 16 | **meta device 三步建模型** | `-k meta_device` ★ 有个 NaN 坑 |
+| 🚧 17 | resid_lambdas 与 x0_lambdas | `-k lambdas` |
+| 🚧 18 | Value Embeddings 与门控 | `-k value_embeds` |
+| 🚧 19 | Smear 与 Backout | `-k smear or backout` |
 | 🚧 20 | 滑动窗口注意力 | `-k sliding` |
 
 ### 卷 4 · 优化器（最硬核的一卷）　✍ 手抄
 | 章 | 标题 | 完成判据指向 |
 |---|---|---|
-| 🚧 21 | 从 SGD 到 AdamW | `-k adamw` |
-| 🚧 22 | 为什么矩阵参数适合 Muon | `-k adamw` |
+| 🚧 21 | 从 SGD 到 AdamW | `-k adamw_step or adamw_decouples` |
+| 🚧 22 | 为什么矩阵参数适合 Muon | `-k muon_orthogonalization` |
 | 🚧 23 | **手写 Newton-Schulz 正交化** | `-k orthogonalize` ★ 20 行 |
 | 🚧 24 | Polar Express | `-k polar` |
-| 🚧 25 | MuonEq / Muon+ / NorMuon | `-k muon_plus or nor_muon` |
+| 🚧 25 | MuonEq / Muon+ / NorMuon | `-k orthogonalize or muon_plus or nor_muon` |
 | 🚧 26 | 谨慎权重衰减 | `-k cautious` |
 | 🚧 27 | 混合优化器与参数分组 | `-k grouping` |
 | 🚧 28 | torch.compile 融合与 0-D tensor 技巧 | `-k hyperparams` |
@@ -225,6 +225,7 @@ src/
 | `scratch/naive_dataloader.py` | `tokenizer.load` → `list_parquet_files` | ✍ **手抄目标** | 敲完两个函数再跑（第 05 章消融基线） |
 | `scratch/packing_demo.py` | `tokenizer.load` → 三个装箱函数 | ✍ **手抄目标** | 敲完三个装箱函数再跑（第 05 章） |
 | `scratch/bpb_demo.py` | `tokenizer.load` → checkpoint + `dataloader` | 🔒 | 卷1 第 06 章 |
+| `scratch/ortho_demo.py` | `optim.orthogonalize` | 🔒 | 卷4 第 23 章（正交化可视化，无可抄算法） |
 | `bash script/train_base.sh` | 上面全部 + 模型 + 优化器 | 🔒 | 卷 1-4 全部完成 |
 | `bash script/eval_base.sh` | checkpoint | 🔒 | 至少跑过一次 `train_base` |
 | `bash script/train_sft.sh` | `data.tasks`（只读）+ 预训练 ckpt | 🔒 | 卷1 + 卷2-4 |
@@ -248,7 +249,7 @@ git checkout main              # 看完切回来
 
 ---
 
-## 五个入口脚本　📖 只读，直接用
+## 六个入口脚本　📖 只读，直接用
 
 ```bash
 bash script/train_base.sh smoke   # 预训练（自动串好 下载数据→训tokenizer→训练）
@@ -273,8 +274,10 @@ bash script/chat.sh       smoke   # 交互式聊天
 uv run pytest tests/ -v
 ```
 
-166 个测试：卷0 6 + 卷1 29（19 + 精确续训 10）+ 卷2-3 18 + 卷4 12
-+ 只读代码护栏 26（checkpoint 15 + 指标 11）
+182 个测试：卷0 6 + 卷1 31（21 + 精确续训 10）+ 卷2-3 25 + 卷4 14
++ 只读代码护栏 103（metrics 11 + checkpoint 15 + engine 50 + tasks 27）
+另有 10 个判据自检（`tests/test_judging_soundness.py`），
+全量 `pytest tests/` 收集到 192 个。
 专门覆盖「看起来对其实错了」的 bug。你在敲的过程中改坏东西，
 测试会立刻告诉你哪里坏了。几个重点：
 

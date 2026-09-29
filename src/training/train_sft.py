@@ -31,6 +31,7 @@ from common import (
 )
 from data.tokenizer import get_tokenizer
 from data.tasks import default_sft_mixture, default_sft_validation
+from inference.engine import render_chat_prompt
 from optim.muon import setup_optimizer
 
 
@@ -66,15 +67,33 @@ def make_sft_loader(task, tokenizer, device_batch_size, seq_len, device,
       3) **按序列而不是按 token 计 loss**
          预训练每个 token 一份；SFT 只对 mask=1 的 token 计。
     """
+    # 数据顺序的可复现性：任务混合内部的顺序由 TaskMixture 用固定种子 42
+    # 决定，这里再用一个显式的 RNG 决定「每轮先看哪一条」。
+    # 同一 seed 跑两次必须给出完全相同的 batch 序列 —— 否则消融实验的
+    # 差异里会混进「这次数据顺序不一样」这个噪声源。
     g = torch.Generator().manual_seed(seed)
 
     def gen():
         n = len(task)
         idx = 0
         skipped = 0
-        while True:
-            ex = task[idx % n]
+        # 每轮把下标打乱一次，轮与轮之间数据顺序不同。
+        # 用上面那个显式的 g 而不是全局 RNG：同一个 seed 必须给出
+        # 完全相同的 batch 序列，否则消融对比里会混进「数据顺序不同」
+        # 这个噪声源。注意 TaskMixture 内部的顺序是固定的（种子 42），
+        # 这里只打乱「先看哪一条」。
+        order = list(range(n))
+
+        def next_example():
+            nonlocal idx, order
+            if idx % n == 0:                 # 每个 epoch 开头打乱一次
+                order = torch.randperm(n, generator=g).tolist()
+            pos = order[idx % n]
             idx += 1
+            return task[pos]
+
+        while True:
+            ex = next_example()
             # truncate="left"：保留对话结尾（最近一轮 assistant 回复）。
             # 若用默认的 "right"，长对话的 assistant 回复会被整段切掉，
             # 导致 mask 全 0 -> 交叉熵 0/0 = NaN。实测 23% 的样本会踩中。
@@ -190,11 +209,16 @@ def main():
         smooth = ema * smooth + (1 - ema) * lf
         debiased = smooth / (1 - ema ** step)
         if step % args.log_every == 0 or step == 1:
-            done = step - 1
-            eta = (num_iterations - step) * dt * (num_iterations / done - 1) if done else 0
+            # 剩余时间 = 剩余步数 × 每步耗时。
+            # 旧版写的是 (num_iterations-step)*dt*(num_iterations/done-1)，
+            # 那个 (num_iterations/done-1) 因子是错的：step=20/2000 时
+            # 它等于 99，把 ETA 放大了一百倍。而且 eta 算完从未被打印，
+            # 是个纯粹的死变量。
+            elapsed = time.time() - t0
+            eta_min = (num_iterations - step) * dt / 60
             log0(f"step {step:5d}/{num_iterations} ({100*step/num_iterations:5.1f}%)"
                  f" | loss {debiased:7.4f} | lrm {lrm:.3f} | dt {dt*1000:6.1f}ms"
-                 f" | {(time.time()-t0)/60:4.1f}m")
+                 f" | {elapsed/60:4.1f}m eta {eta_min:.1f}m")
         history.append(dict(step=step, sft_loss=debiased, lrm=lrm, dt=dt))
 
         if args.eval_every > 0 and step % args.eval_every == 0:
@@ -202,8 +226,10 @@ def main():
             from inference.engine import Engine
             eng = Engine(model.eval(), tokenizer)
             for q in ["What is the capital of France?", "What is 12 * 7?"]:
-                ids = tokenizer.encode(f"<|user_start|>{q}<|user_end|><|assistant_start|>",
-                                       prepend="<|bos|>")
+                # ★ 用 render_chat_prompt，不要 f-string 拼特殊 token。
+                #   encode() 走 encode_ordinary，会把 "<|user_start|>" 切成
+                #   12 个普通 token，与训练时的格式不一致。
+                ids = render_chat_prompt(tokenizer, q)
                 out, _ = eng.generate_batch(ids, num_samples=1, max_tokens=32,
                                             temperature=0.0, use_tools=True)
                 log0(f"    用户: {q}")

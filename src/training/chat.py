@@ -16,7 +16,7 @@
 import argparse
 
 from common import autodetect_device_type, compute_init, log0, get_runs_dir
-from inference.engine import Engine
+from inference.engine import Engine, render_chat_prompt
 from common.checkpoint import load_checkpoint, find_latest
 from model.gpt import build_model
 from data.tokenizer import get_tokenizer
@@ -63,19 +63,69 @@ def load_sft_model(mode, tag, device):
     return model, tokenizer, base_tag
 
 
-def render_history(tokenizer, system, history):
-    """把 (user, assistant) 历史拼成一段带特殊 token 的 prompt。"""
+def render_history(tokenizer, system, history, user_text=None):
+    """
+    把 (user, assistant) 历史 + 本轮 user_text 拼成一段 prompt。
+
+    ── ★ user_text 必须传进来 ──────────────────────────────────
+    曾经的 bug：`ask(user_text)` 调用的是 `render_history(tok, system, history)`
+    —— **根本没把 user_text 传下去**，它只在生成完回复后进了
+    history.append。于是模型收到的 prompt 是
+        <|bos|><|user_start|><|user_end|><|assistant_start|>
+    一个**空的 user 轮**，模型在凭空回答，`chat.sh` 完全不可用。
+    现在 user_text 是第 4 个参数，缺省 None 时只渲染历史前缀。
+
+    ── ★ 特殊 token 必须用 encode_special 逐个取 id ──────────────
+    不能写成 f"<|user_start|>{u}<|user_end|>" 再整个 encode()：
+    encode() 走 tiktoken 的 encode_ordinary，它**按定义忽略** special
+    tokens，会把 "<|user_start|>" 切成 12 个普通 token。
+    详见 inference/engine.py:render_chat_prompt 的完整说明。
+
+    ── ★ 最后一轮交给 render_chat_prompt ───────────────────────
+    训练时（render_conversation）产出的序列是
+        BOS <|user_start|> u <|user_end|> <|assistant_start|> a <|assistant_end|>
+    推理 prompt 必须停在 <|assistant_start|>。
+    为了让 chat 永远不会和训练格式漂移，本轮 (system + user_text)
+    直接复用 render_chat_prompt —— 它与 render_conversation 的输出
+    逐 token 对齐，由 tests 锁定。
+    """
     S = tokenizer.encode_special
     ids = [tokenizer.get_bos_token_id()]
-    if system:
-        ids += [S("<|user_start|>"), S("<|assistant_start|>")]
-        ids += tokenizer.encode(system)
-        ids += [S("<|assistant_end|>")]
-    for user, assistant in history:
-        ids += [S("<|user_start|>")] + tokenizer.encode(user) + [S("<|user_end|>")]
+    for i, (user, assistant) in enumerate(history):
+        # system 合并进**第一条** user 消息（render_conversation 就是这么做的，
+        # 实测：system + "\n\n" + 第一条 user 合成一个 user 轮）。
+        text = f"{system}\n\n{user}" if (system and i == 0) else user
+        ids += [S("<|user_start|>")] + tokenizer.encode(text) + [S("<|user_end|>")]
         ids += [S("<|assistant_start|>")] + tokenizer.encode(assistant) + [S("<|assistant_end|>")]
-    ids += [S("<|user_start|>")]
-    return ids
+    if user_text is None:
+        # 只要历史前缀：收在 <|user_start|>，调用方自己接内容
+        return ids + [S("<|user_start|>")]
+    # 本轮（含 system，若历史为空则 system 归这一轮）。
+    # [1:] 去掉 render_chat_prompt 自带的 BOS —— 本函数已经加过了。
+    tail_system = None if history else system
+    return ids + render_chat_prompt(tokenizer, user_text, tail_system)[1:]
+
+
+def ask(engine, tokenizer, history, user_text, *, system=None,
+        max_tokens=256, temperature=0.7, top_k=40, seed=42, use_tools=True):
+    """
+    问一轮，把 (user_text, reply) 追加进 history，返回 reply。
+
+    ── 为什么要提成模块级函数 ──────────────────────────────────
+    之前它是 main() 里的闭包，**无法被测试调用**。于是
+    「ask 没有把 user_text 传给 render_history」这个 bug 零测试覆盖，
+    一直活到今天 —— 模型收到的是空 user 轮，chat.sh 完全不可用。
+    提成模块级之后，tests/test_engine.py 可以直接调它，
+    并断言真正送进 Engine 的 ids 里含有用户的问题。
+    """
+    ids = render_history(tokenizer, system, history, user_text)
+    out, _ = engine.generate_batch(
+        ids, num_samples=1, max_tokens=max_tokens,
+        temperature=temperature, top_k=top_k,
+        seed=seed, use_tools=use_tools)
+    reply = tokenizer.decode(out[0][len(ids):])
+    history.append((user_text, reply))
+    return reply
 
 
 def main():
@@ -94,19 +144,15 @@ def main():
 
     history = []
 
-    def ask(user_text):
-        ids = render_history(tokenizer, args.system, history)
-        out, _ = engine.generate_batch(
-            ids, num_samples=1, max_tokens=args.max_tokens,
-            temperature=args.temperature, top_k=args.top_k,
-            seed=args.seed, use_tools=not args.no_tools)
-        reply = tokenizer.decode(out[0][len(ids):])
-        history.append((user_text, reply))
-        return reply
+    def _ask(user_text):
+        return ask(engine, tokenizer, history, user_text,
+                   system=args.system, max_tokens=args.max_tokens,
+                   temperature=args.temperature, top_k=args.top_k,
+                   seed=args.seed, use_tools=not args.no_tools)
 
     # ---- 单次模式 ----
     if args.prompt:
-        print(ask(args.prompt))
+        print(_ask(args.prompt))
         return
 
     # ---- 交互模式 ----
@@ -124,7 +170,7 @@ def main():
             history.clear()
             log0("  （历史已清空）")
             continue
-        print(f"\033[90m模型 > \033[0m{ask(user_text)}")
+        print(f"\033[90m模型 > \033[0m{_ask(user_text)}")
 
 
 if __name__ == "__main__":

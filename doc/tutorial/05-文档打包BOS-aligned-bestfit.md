@@ -21,15 +21,17 @@
 
 ## 概念：问题是什么
 
-实测 ClimbMix 的文档长度分布（`scratch/` 里可以自己查）：
+实测 ClimbMix 的文档长度分布（**单位是 token**，`scratch/naive_dataloader.py`
+里可以自己查；本项目实测的文档比 nanochat 论文里说的要短，
+中位数 628 而不是 740）：
 
-| 分位 | 字符数 | 约等于 token |
-|---|---|---|
-| min | 11 | 3 |
-| p25 | ~1200 | ~370 |
-| **中位数** | **~2400** | **~740** |
-| p75 | ~5000 | ~1550 |
-| max | 111,465 | ~34,000 |
+| 分位 | token 数 |
+|---|---|
+| min | 4 |
+| p25 | 279 |
+| **中位数** | **628** |
+| p75 | 829 |
+| max | 25,055 |
 
 而 GPU 只吃**矩形** tensor：一个 `(B, T)` 的 int64 张量。
 `T` 必须是一个固定的数。
@@ -159,9 +161,9 @@ best-fit：     65% 的 token 用于训练，但 0% 跨文档
 <summary><b>👀 展开参考答案（先自己想 20 分钟）</b></summary>
 
 ```python
-def pack_row(doc_buffer: list[list[int]], capacity: int) -> tuple[list[int], dict]:
+def pack_row_bestfit(buf, capacity):
     """
-    把一批文档装进一行，返回 (装好的 token 列表, 统计信息)。
+    把一批文档装进一行，返回 (装好的 token 列表, 统计)。
 
     两条规则：
       1) 优先选「能完整放下的最长文档」（best-fit）
@@ -169,37 +171,49 @@ def pack_row(doc_buffer: list[list[int]], capacity: int) -> tuple[list[int], dic
       2) 都放不下时，裁剪「最短的」那篇填满
          —— 裁最短的，浪费最少
 
-    返回的统计里包含裁剪了多少 token，用来算「利用率」。
-    """
-    row = []
-    buf = list(doc_buffer)          # 拷贝一份，不破坏调用方的 buffer
-    cropped = 0
-    n_docs = 0
+    ★ 返回的 st 必须带 'order' 键 —— packing_demo.run_packer 靠它
+      知道「这一行真正用掉了 buffer 里的哪几篇」，否则可视化拿不到数据，
+      而且缓冲区不会推进，200 行都在同一批文档里打转（裁剪率恒为 0）。
+      order 里每项是 (原下标, 原长, 装入长) 三元组。
 
-    while buf:
+    ★ 循环条件是 `while buf and len(row) < capacity`：
+      只写 `while buf` 的话，规则 C 执行完行已满，下一轮 remaining=0，
+      d[:0] 是空切片，行永远填不满。
+    """
+    row, buf = [], list(buf)          # 拷贝一份，不破坏调用方的 buffer
+    cropped, order = 0, []
+
+    while buf and len(row) < capacity:
         remaining = capacity - len(row)
 
-        # ── 规则 1：best-fit ──
+        # ── 规则 1：best-fit —— 找「能完整放下的最长」那篇 ──
         best_idx, best_len = -1, 0
         for i, doc in enumerate(buf):
             n = len(doc)
             if n <= remaining and n > best_len:
                 best_idx, best_len = i, n
         if best_idx >= 0:
-            row.extend(buf.pop(best_idx))
-            n_docs += 1
+            doc = buf.pop(best_idx)
+            order.append((best_idx, len(doc), len(doc)))   # 完整放入
+            row.extend(doc)
             continue
 
-        # ── 规则 2：裁剪最短的 ──
+        # ── 规则 2：裁剪「最短的」那篇填满剩余空间 ──
         shortest_idx = min(range(len(buf)), key=lambda i: len(buf[i]))
         doc = buf.pop(shortest_idx)
-        row.extend(doc[:remaining])          # 只取能放下的部分
-        cropped += len(doc) - remaining       # 剩下的算「被丢弃」
-        n_docs += 1
-        break                                # 行满了
+        take = min(len(doc), remaining)
+        order.append((shortest_idx, len(doc), take))       # 被裁剪
+        row.extend(doc[:take])
+        cropped += len(doc) - take                         # 剩下的算「被丢弃」
+        break                                              # ★ 行满了，必须 break
 
-    return row, dict(capacity=capacity, used=len(row), n_docs=n_docs, cropped=cropped)
+    return row, dict(cropped=cropped, order=order)
 ```
+
+> ⚠ 函数名必须是 `pack_row_bestfit`（不是 `pack_row`）：`packing_demo.py`
+> 的 `PACKERS` 字典按这个名字引用它。同理还有 `pack_row_firstfit`
+> （规则 1 换成「找到第一个能放下的就停」）和 `pack_row_worstcrop`
+> （规则 2 换成「裁最长的」）。
 
 </details>
 
@@ -517,7 +531,7 @@ naive            100.0% [-1, 259, -1, 354, 5, -1, 35, 253, -1, 448, -1, -1]
 best-fit           0.0% [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
 → best-fit 恒为 0%（每行一定从 BOS 开始）
-→ naive 的大多数行 > 0，意味���模型要从「没有开头的句子」开始预测
+→ naive 的大多数行 > 0，意味着模型要从「没有开头的句子」开始预测
 
 === 一行 naive 窗口的开头长什么样（注意第一个 BOS 的位置）===
   首个 BOS 位于位置 -1

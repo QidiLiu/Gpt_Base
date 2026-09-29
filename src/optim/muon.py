@@ -4,8 +4,8 @@ MuonAdamW：矩阵参数用 Muon，其余用 AdamW。
 ▓▓ 这一章要你敲的部分 ▓▓
     adamw_step             卷4 第 21 章（AdamW 本身）
     muon_step              卷4 第 23 章（Muon 的一步）
-    HyperParams            卷4 第 29 章（0-D tensor 传参技巧）
-    compile_or_eager       卷4 第 29 章（torch.compile 兜底）
+    HyperParams            卷4 第 28 章（0-D tensor 传参技巧）
+    compile_or_eager       卷4 第 28 章（torch.compile 兜底）
     MuonAdamW.step         卷4（AdamW 路径；Muon 路径已给）
     setup_optimizer        卷4 第 27 章（参数分组）
     分布式分支（world_size>1）-> 📖 只读，卷6 专章
@@ -35,7 +35,7 @@ from optim.orthogonalize import (
 
 
 # ===========================================================================
-# ❗ 1. 0-D CPU tensor 传参技巧（卷4 第 29 章）
+# ❗ 1. 0-D CPU tensor 传参技巧（卷4 第 28 章）
 # ===========================================================================
 # torch.compile 会把「Python 标量」当成常量 bake 进编译产物。
 # 于是改变 lr 或 beta2 就会触发重新编译（几秒钟）。
@@ -175,7 +175,7 @@ def muon_step(stacked_grad, stacked_param, momentum_buf, second_moment_buf,
 
 
 # ===========================================================================
-# ❗ 4. torch.compile 的兜底（卷4 第 29 章）
+# ❗ 4. torch.compile 的兜底（卷4 第 28 章）
 # ===========================================================================
 _COMPILE_FAILED = False   # 全局只警告一次，避免刷屏
 
@@ -267,6 +267,9 @@ class MuonAdamW(torch.optim.Optimizer):
 
     @torch.no_grad()
     def step(self):
+        # rank / world 在单卡下没人用，但**你要写的 AdamW 路径会用**：
+        # 分布式分支要按 world 决定是 all_reduce 还是 reduce_scatter。
+        # 这里先算好，提示里直接引用。lint 的 F841 是预期内的。
         if dist.is_available() and dist.is_initialized():
             rank, world = dist.get_rank(), dist.get_world_size()
         else:

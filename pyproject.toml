@@ -17,6 +17,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=8.0.0",
+    "ruff>=0.6.0",
 ]
 
 # torch 走 cu132 索引（与 ~/Dev/Contour_Painter 保持一致）
@@ -39,3 +40,55 @@ namespace = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+# 把仓库根目录加进 sys.path，让 `from scratch.packing_demo import ...` 这类
+# 引用在**任何**调用方式下都能工作。
+#
+# 为什么需要：`python -m pytest` 会把 CWD 塞进 sys.path，但直接跑 `pytest`
+# 不会。之前只有这一种写法时，判据在 `python -m pytest` 下全绿、在
+# `uv run pytest` 下却报 ModuleNotFoundError —— 而 scratch/audit_docs.py
+# 和 README 里给学习者的命令用的都是后者。判据必须在两种调用方式下等价。
+#
+# src/ 下的包（common / data / model ...）由 uv 以 namespace 包安装，
+# 不依赖这一行；scratch/ 不在包内，所以需要显式加。
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+# 骨架文件里「未使用的 import」是留给答案用的（比如 tokenizer.py 里的
+# pickle / rustbpe，只有你实现了 save/train 才会用到），不是错误。
+# 这里只挑出真正会掩盖 bug 的那几类。
+select = ["E4", "E7", "E9", "F", "B"]
+ignore = [
+    "E501",   # 行宽：docstring 里的中文表格经常超宽，交给人眼看
+    "E402",   # 模块级 import 不在顶部：common/__init__.py 有意为之
+    "E701",   # `if x: return` 单行：本项目大量使用，可读性更好
+    "E702",   # 分号：本项目大量使用
+    "B008",   # 函数调用默认值里的可变对象（本项目没有这种写法）
+    "B905",   # zip 不带 strict：刻意不写，见各处注释
+    "B007",   # 未使用的循环变量：教学代码里 `_` 用得多
+    "B019",   # lru_cache 挂在实例方法上：tokenizer 只有一个实例，无泄漏
+    "E741",   # 单字母名 l：数学惯例
+]
+
+[tool.ruff.lint.per-file-ignores]
+# ── 骨架文件：未使用的 import 是留给答案用的 ────────────────────
+# tokenizer.py 的 pickle/rustbpe 只有实现 save/train 才会用到；
+# gpt.py 的 F/asdict 只有实现 forward 才会用到；依此类推。
+"src/data/tokenizer.py" = ["F401"]
+"src/data/dataset.py" = ["F401"]
+"src/data/dataloader.py" = ["F401"]
+"src/evaluation/metrics.py" = ["F401"]   # math / log0 留给 evaluate_bpb 的答案
+"src/model/gpt.py" = ["F401"]
+"src/model/layers.py" = ["F401"]
+"src/optim/muon.py" = ["F401", "F841"]   # rank/world 是留给 AdamW 分布式分支的
+"src/optim/orthogonalize.py" = ["F401"]
+"src/training/train_tokenizer.py" = ["F401"]
+# ── re-export 模块：import 就是给人用的 ──────────────────────
+"src/common/__init__.py" = ["F401"]
+# ── 判据自检用 AST 扫描源码，import 放在函数里是有意的 ─────────
+"tests/test_judging_soundness.py" = ["E402"]
+# scratch 是实验脚本，允许随手写
+"scratch/*" = ["F401", "F841", "E402", "B007", "E731"]   # 实验脚本里 lambda 随手写

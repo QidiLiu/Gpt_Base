@@ -35,7 +35,7 @@ NotImplementedError: 待实现：attend —— 见 docstring 的三步
 
 | 路线 | 做法 | 适合 |
 |---|---|---|
-| **A. 跟敲（推荐）** | 照着 `raise` 消息 + 教程概念部分自己实现，跑通判据再往下走 | 想真正理解，卷1-4 约 8-11 小时 |
+| **A. 跟敲（推荐）** | 照着 `raise` 消息 + 教程概念部分自己实现，跑通判据再往下走 | 想真正理解，卷1-4 约 8-11 小时纯敲代码（加上逐章验证约 17 h，再加消融 4-8 h） |
 | **B. 通读** | `git checkout solution` 拿到完整实现，直接读 | 只想建立全貌，3-4 小时 |
 
 **「手抄」的适用范围是有原则的**，不是「全部都抄」：
@@ -76,6 +76,25 @@ bash script/progress.sh        # 告诉你哪一章还没做完
 ```
 
 只看某一章：`bash script/progress.sh 05`
+
+顺手看一眼 pytest 的原始输出：
+
+```bash
+uv run pytest tests/ -q
+# 预期：69 failed, 116 passed, 7 skipped
+```
+
+> ### ⚠️ 这 69 个 `failed` 是**正确**的
+>
+> 它们不是环境坏了，而是 `src/` 骨架里每一个待你实现的函数。
+> 每个 failed 的原因里都写着「待实现：xxx —— 见 docstring」。
+>
+> ```
+> FAILED tests/test_data.py::test_every_row_starts_with_bos - NotImplementedError: 待实现：make_dataloader ...
+> ```
+>
+> `git checkout solution` 后再跑会变成 `190 passed, 2 skipped` —— 那才是全绿。
+> **在 `main` 上看到 0 failed 才说明你走错了分支。**
 
 ---
 

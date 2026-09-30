@@ -12,11 +12,11 @@
 
 | 路线 | 做法 | 适合 |
 |---|---|---|
-| **A. 跟敲（推荐）** | 每章的「手抄代码」块自己敲进 `src/`，不看现成代码 | 想真正理解，预算 15-25 小时 |
+| **A. 跟敲（推荐）** | 每章的「手抄代码」块自己敲进 `src/`，不看现成代码 | 想真正理解，预算 8-11 小时（+4-8 小时消融） |
 | **B. 通读** | 直接读 `src/` 里的成品代码，本教程当注释读 | 想快速建立全貌，预算 3-4 小时 |
 
-如果你已经跑通 `bash script/train_base.sh smoke`，说明路线 B 的代码已经在你机器上了，
-可以直接从「动手验证」小节开始。
+如果你在 `solution` 分支（`git checkout solution`），说明路线 B 的代码已经在你机器上了，
+可以直接从「动手验证」小节开始。逐章时间预算见 [第 00 章](00-如何使用本教程.md)。
 
 ---
 
@@ -25,11 +25,32 @@
 ```bash
 cd ~/Dev/Gpt_Base
 uv sync                      # 建 .venv，torch 走 cu132
-uv run pytest tests/ -q      # 190 passed, 2 skipped 说明环境没问题
-bash script/train_base.sh smoke
+uv run pytest tests/ -q      # main 分支：69 failed, 116 passed, 7 skipped
+bash script/progress.sh      # 逐章告诉你「我该做哪一章」
 ```
 
-**你的硬件够用吗？** 这个项目是按 16 GB 单卡（RTX 4060 Ti）设计的。
+> ### ⚠️ 看到一堆 `failed` 是**正确**的，不是环境坏了
+>
+> `main` 分支（也就是你克隆下来的样子）的 `src/` 是**骨架**：
+> 每个要你实现的函数体都是 `raise NotImplementedError`。
+> 所以 `pytest` 的**预期结果就是一堆 failed** ——
+> **每一个 failed 就是你接下来要写的一个函数。**
+>
+> ```
+> FAILED tests/test_data.py::test_every_row_starts_with_bos - NotImplementedError: 待实现：make_dataloader ...
+> ```
+>
+> 想知道「我该做哪一章」，跑 `bash script/progress.sh`；
+> 想知道这些 failed 到底是什么意思，见 [第 01 章](01-环境与全景图.md) 的
+> 「⚠️ 先搞清楚：你现在看到的『一堆失败』是**正确**的」。
+>
+> `git checkout solution` 后再跑，会看到 `190 passed, 2 skipped` —— 那才是全绿。
+> **在 `main` 上看到 `190 passed` 才说明你走错了分支。**
+
+`bash script/train_base.sh smoke` 在卷 1-4 敲完之前**跑不通是正常的**
+（它依赖你还没实现的那部分），不用 troubleshoot。
+
+**你的硬件够用吗？** 本项目按 16 GB 单卡（RTX 4060 Ti）设计。
 三档规模：
 
 | 档位 | 模型 | 步数 | 耗时 | 峰值显存 |

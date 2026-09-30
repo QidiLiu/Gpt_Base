@@ -248,7 +248,12 @@ def render_conversation(self, conversation: dict, max_tokens: int = 2048,
 
 新建 `scratch/mask_demo.py`：
 
+> 📦 仓库里已有 `scratch/mask_demo.py`（验证 1-3 都在里面），**直接跑就行**。
+> 下面三块是它的逐段拆解，供你从零手敲时对照。
+
 ```python
+import torch
+import torch.nn.functional as F
 from data.tokenizer import get_tokenizer
 
 tok = get_tokenizer()
@@ -348,6 +353,10 @@ print("[OK] 工具调用表达式和自然语言要学，工具返回值不学")
 ### 验证 3：亲眼看到「截断把监督信号全切掉」
 
 追加到 `scratch/mask_demo.py`：
+
+> ⚠️ 本块用到 `torch` 和 `F`，但**这两行 import 在验证 1 建的文件顶部**
+> （`import torch` / `import torch.nn.functional as F`）。
+> 如果你是新建空文件直接贴本块，会得到 `NameError: name 'torch' is not defined`。
 
 ```python
 # ── 验证 3：亲眼看到「截断把监督信号全切掉」──
@@ -455,8 +464,9 @@ cp scratch/tokenizer.py.bak src/data/tokenizer.py
 后果是模型学不会停止，推理时一直说下去。
 可以用 `bash script/chat.sh smoke -m 200` 观察：回复永远到不了自然结尾。
 
-**坑 5：prompt 里的字母带空格。**
-`"- Paris= F"` 而不是 `"- Paris=F"`。见本章「陷阱」一节。
+**坑 5：prompt 里的字母前面多了空格。**
+要写 `"- Paris=F"`（等号和字母**之间不能有空格**），
+写成 `"- Paris= F"` 就错了。见本章「陷阱」一节。
 用 `uv run python -c "
 from data.tokenizer import get_tokenizer
 t = get_tokenizer()

@@ -151,7 +151,7 @@ def compute_token_bytes(tok, device="cpu"):
 - 随机初始化：2.349
 - 训完：1.698
 
-`full` 档 d6（2 亿 token，比 smoke 多 14 倍数据）大概会到 **1.3-1.5**。
+`ablation` 档 d6（2 亿 token，比 smoke 多 14 倍数据）大概会到 **1.3-1.5**。
 离 GPT-2（~0.95）还差很远 —— 这符合第 01 章说的「硬件差了 1250 倍」。
 
 **但这不影响本章的价值**：消融实验看的是**差值**，
@@ -428,16 +428,16 @@ print("\n→ 同样的真实能力，loss 相差 5 倍。bpb 才是那个不变�
 
 ```bash
 # 1) 基线
-bash script/train_base.sh full --model-tag d6_base --no-resume
+bash script/train_base.sh ablation --model-tag d6_base --no-resume
 
 # 2) 消融（一次只改一个变量）
-bash script/train_base.sh full --model-tag d6_norope     --no-rope       --no-resume
-bash script/train_base.sh full --model-tag d6_noqk       --no-qk-norm    --no-resume
-bash script/train_base.sh full --model-tag d6_gelu       --activation gelu --no-resume
-bash script/train_base.sh full --model-tag d6_tied       --tie-embeddings  --no-resume
-bash script/train_base.sh full --model-tag d6_nosoftcap  --no-softcap    --no-resume
-bash script/train_base.sh full --model-tag d6_muonadv    --muon-advanced --no-resume
-bash script/train_base.sh full --model-tag d6_alltricks  --all-tricks    --no-resume
+bash script/train_base.sh ablation --model-tag d6_norope     --no-rope       --no-resume
+bash script/train_base.sh ablation --model-tag d6_noqk       --no-qk-norm    --no-resume
+bash script/train_base.sh ablation --model-tag d6_gelu       --activation gelu --no-resume
+bash script/train_base.sh ablation --model-tag d6_tied       --tie-embeddings  --no-resume
+bash script/train_base.sh ablation --model-tag d6_nosoftcap  --no-softcap    --no-resume
+bash script/train_base.sh ablation --model-tag d6_muonadv    --muon-advanced --no-resume
+bash script/train_base.sh ablation --model-tag d6_alltricks  --all-tricks    --no-resume
 ```
 
 > ⚠ **`--no-resume` 不是可选项。** `train_base.py` 默认会自动从
@@ -477,7 +477,7 @@ bash scratch/ablation.sh d4base     # 指定基线 tag
 
 **三条纪律**（否则消融实验就是自欺欺人）：
 
-1. **必须用 `full` 档。** `smoke` 档的 bpb 噪声（±0.02）大于效应本身。
+1. **必须用 `ablation` 档。** `smoke` 档的 bpb 噪声（±0.02）大于效应本身。
 2. **一次只改一个变量。**
 3. **`|Δ| < 0.02` 时重复跑一次。** 确认不是初始化随机性导致的波动。
 
@@ -537,7 +537,7 @@ CORE 的原理（`nanochat/core_eval.py`）值得预告：
 - 人类水平（用同样方式度量）：~0.8-1.0
 
 **本教程的 bpb 目标**：
-`full` 档 d6 应该能到 **1.3-1.5**。离 GPT-2（~0.95）还远，
+`ablation` 档 d6 应该能到 **1.3-1.5**。离 GPT-2（~0.95）还远，
 但比随机初始化（2.8）好得多，而且**足以分辨 0.01-0.05 的消融差异**。
 
 ---

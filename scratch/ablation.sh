@@ -7,9 +7,14 @@
 #
 # ★ 做消融实验时 train_base.sh 必须加 --no-resume，
 #   否则同一个 tag 重跑会被 auto-resume 吞掉（0 步跑完），bpb 一模一样。
-# ★ 必须用 full 档。debug 档只 20 步，模型还在初始化附近，
+# ★ 必须用 ablation 档（d6）。debug 档只 20 步，模型还在初始化附近，
 #   架构差异测不出来（实测五组 bpb 完全一致）。
-#   smoke 档 896 步勉强能看出趋势，full 档才能得出可信结论。
+#   smoke 档 896 步勉强能看出趋势，ablation 档才能得出可信结论。
+#
+#   档位为什么不是 full：full 档是 d24 + 5 个 trick 全开 + Muon advanced，
+#   一次 128 小时。消融要跑 8 组以上，而且基线必须保持**中性**
+#   （Muon simple + trick 全关），否则测出来的是「A 相对 A+B」，
+#   单项贡献被稀释。这正是 ablation 档存在的理由。
 cd "$(dirname "$0")/.."
 BASE_TAG="${1:-d6_base}"
 
@@ -38,7 +43,7 @@ for d in runs/base_checkpoints/*/; do
 done
 if [ -z "$base" ]; then
   echo "  找不到基线 $BASE_TAG，Δ 列将为空"
-  echo "  先跑：bash script/train_base.sh full --model-tag $BASE_TAG --no-resume"
+  echo "  先跑：bash script/train_base.sh ablation --model-tag $BASE_TAG --no-resume"
 fi
 for d in runs/base_checkpoints/*/; do
   t=$(basename "$d")
@@ -56,6 +61,7 @@ done
 echo
 echo "Δ < 0 表示比基线好（bpb 越低越好）"
 echo "纪律："
-echo "  1. 消融必须用 full 档 —— debug 档（20 步）测不出架构差异"
+echo "  1. 消融必须用 ablation 档（d6）—— debug 档（20 步）测不出架构差异"
+echo "     full 档（d24，128 小时）不适合做消融，且基线非中性会稀释单项贡献"
 echo "  2. 一次只改一个变量"
 echo "  3. |Δ| < 0.02 时重复跑一次，确认不是初始化随机性的波动"

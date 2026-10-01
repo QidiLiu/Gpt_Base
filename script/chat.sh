@@ -14,10 +14,12 @@ source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 MODE="${1:-smoke}"; [ $# -gt 0 ] && shift || true
 
-[ -f "runs/base_checkpoints/$TAG/model_"*.pt ] 2>/dev/null \
+# compgen 而非 `[ -f glob ]`：后者在有 2+ 个 checkpoint 时会误判为「找不到」
+# （bash 内建 `[` 收到多个参数 → "binary operator expected" → 退出码 2）。
+compgen -G "runs/base_checkpoints/$TAG/model_*.pt" > /dev/null \
   || die "没有找到模型 $TAG。先跑：bash script/train_base.sh $MODE"
 
-if [ -f "runs/sft_checkpoints/$TAG/model_"*.pt ] 2>/dev/null ]; then
+if compgen -G "runs/sft_checkpoints/$TAG/model_*.pt" > /dev/null 2>&1; then
   say "聊天：$TAG（SFT 模型）"
 else
   warn "没有 SFT 模型，将使用基座模型。它会续写文本，但不会和你对话。"

@@ -4,6 +4,7 @@ import torch
 from data.tokenizer import get_tokenizer, get_token_bytes
 from data.dataloader import make_dataloader
 from common import load_latest, get_runs_dir
+from common.config import default_tag
 
 tok = get_tokenizer()
 tb = get_token_bytes()
@@ -24,7 +25,9 @@ print("\n=== 理论参考：均匀分布（随机初始化）===")
 print(f"  对 {V} 个 token 完全不确定 -> 每 token {math.log(V):.4f} nats")
 print(f"  换算 bpb = log2({V}) / {mean_bytes:.3f} = {math.log(V)/math.log(2)/mean_bytes:.4f}")
 
-model, _, meta = load_latest(get_runs_dir(), "d4", "cuda")
+# tag 从 config.py 的 PRESETS 读，不要硬写 "d4" ——
+# 硬写的话改了档位映射就会悄悄加载到另一个模型（或报「找不到存档」）。
+model, _, meta = load_latest(get_runs_dir(), default_tag("smoke"), "cuda")
 model.eval()
 dl = make_dataloader(tok, 8, model.config.sequence_len, "val", "cuda")
 tbc = tb.to("cuda")

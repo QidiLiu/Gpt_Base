@@ -33,6 +33,7 @@ from common import (
     human_time,
     COMPUTE_DTYPE,
     COMPUTE_DTYPE_REASON,
+    flash_backend_report,
 )
 from common.config import make_run_config, resolve_scaling
 from data.tokenizer import get_tokenizer, get_token_bytes
@@ -48,14 +49,17 @@ from common.checkpoint import save_checkpoint, load_checkpoint, find_latest
 # ===========================================================================
 def parse_args():
     p = argparse.ArgumentParser(description="预训练 base 模型")
-    p.add_argument("--mode", default="smoke", choices=["debug", "smoke", "full"],
-                   help="档位：debug=单步调试 / smoke=2-3分钟 / full=20-25分钟")
+    p.add_argument("--mode", default="smoke",
+                   choices=["debug", "smoke", "ablation", "full"],
+                   help="档位：debug=单步调试 / smoke=2-3分钟 / "
+                        "ablation=d6消融(约1小时) / full=d24最佳组合(约128小时)")
     p.add_argument("--depth", type=int, default=None, help="覆盖档位默认深度（唯一旋钮）")
     # 消融开关：直接覆盖 ModelConfig 的字段
     for flag, typ, help_ in [
         ("norm-type", str, "rms|layer"),
         ("activation", str, "relu2|gelu"),
         ("window-pattern", str, "L|SSL|SSSL"),
+        ("attn-impl", str, "flex|sdpa（滑窗走哪条路径，详见 model/layers.py）"),
     ]:
         p.add_argument(f"--{flag}", type=typ, default=None, help=help_)
     for flag, help_ in [
@@ -92,6 +96,7 @@ def apply_overrides(cfg, args) -> None:
     if args.norm_type:       m.norm_type = args.norm_type
     if args.activation:      m.activation = args.activation
     if args.window_pattern:  m.window_pattern = args.window_pattern
+    if args.attn_impl:       m.attn_impl = args.attn_impl
     if args.no_rope:         m.use_rope = False
     if args.no_qk_norm:      m.qk_norm_scale = 0.0
     if args.tie_embeddings:  m.tie_embeddings = True
@@ -188,6 +193,7 @@ def main():
     ddp, rank, local_rank, world_size, device = compute_init(device_type)
     sync = synchronize(device_type)
     log0(f"设备 {device} | COMPUTE_DTYPE {COMPUTE_DTYPE} ({COMPUTE_DTYPE_REASON})")
+    log0(flash_backend_report(device_type))
 
     # ---- 1) 配置：单一旋钮推导 ----
     tokenizer = get_tokenizer()

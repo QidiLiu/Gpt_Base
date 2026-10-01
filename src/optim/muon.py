@@ -167,6 +167,27 @@ def muon_step(stacked_grad, stacked_param, momentum_buf, second_moment_buf,
     ⚠ use_compiled_ortho 这个参数是给「把正交化单独编译」预留的。
       本项目默认 False（直接调用），因为 advanced 版图太大，
       fullgraph=True 容易编译失败。simple 版才值得编译。
+
+    ★★★ 第 5 步有个坑，写之前务必读 ★★★
+      谨慎 WD 的分支条件**不能**写成：
+          if ... and hp["wd"] != 0:
+      `hp["wd"]` 是一个 0-D **tensor**。拿它做 Python 的 if 判断，
+      在 torch.compile(fullgraph=True) 下就是 dynamo 眼里的
+      "Data-dependent branching" —— 直接拒绝编译，于是整个 muon_step
+      **静默回落到 eager**。实测代价（d24 / trick 全开）：
+          带这个判断   862 ms/micro  ->  full 档 128 小时
+          去掉这个判断 710 ms/micro  ->  full 档 105 小时
+      而且它**不报错**，只在日志里留一行「回落到 eager」，极易漏看。
+
+      正确写法：只判断 cfg（静态的 Python 值），无条件算 mask：
+          if cfg.flavor != "simple" and cfg.use_cautious_wd:
+              mask = (g * stacked_param) >= 0
+              stacked_param.sub_(lr * g + lr * hp["wd"] * stacked_param * mask)
+      wd == 0 时那一项是 0*param*mask == 0，数值上完全等价。
+
+      一般性教训：凡是「tensor 参与 Python 的 if / while / and / or」，
+      在 fullgraph=True 下都会炸。超参要参与控制流，先把它 .item() 取出来
+      （但那会重新引入重编译 —— 所以更好的办法是像这里一样改掉控制流本身）。
     """
     raise NotImplementedError(
         "待实现：muon_step —— 五个阶段，见 docstring\n"

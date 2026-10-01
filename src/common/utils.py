@@ -172,6 +172,54 @@ def get_max_memory(device_type: str = "cuda"):
 
 
 # ---------------------------------------------------------------------------
+# 2.5) 注意力后端探针
+# ---------------------------------------------------------------------------
+def flash_backend_report(device_type: str = "cuda") -> str:
+    """
+    报告本卡 SDPA 各后端的可用性 —— 让「保证用上 FA2」**可见**，而不是靠信任。
+
+    ── 为什么需要这个函数？────────────────────────────────────
+    `F.scaled_dot_product_attention` 会在所有可用后端里静默挑一个。
+    挑中 flash 是运气好，但没有任何东西保证它。实测本项目里，
+    **全上下文路径一直都在用 FA2，只是从来没人验证过** ——
+    哪天某个 shape 或参数让它挑不满足，就悄悄退回 mem-efficient，
+    而且不报错。教程卷3 第20章的「性能悬崖」就是这么来的。
+
+    实测（RTX 4060 Ti / SM 8.9）：
+        is_causal=True 全上下文          flash ✓  0.22 ms
+        GQA（n_head != n_kv_head）       flash ✓
+        KV cache decode（Tq=1）          flash ✓
+        滑窗 + 显式 attn_mask             flash ✗  → 退回 mem-efficient，0.50 ms
+        滑窗 + flex_attention            flash ✓  → 0.18 ms（见 model/layers.py）
+
+    非 CUDA 平台返回一行说明，训练照常跑（CPU 上没有 flash kernel）。
+    """
+    if device_type != "cuda":
+        return "注意力后端：非 CUDA 平台，无 flash kernel（CPU 训练不受影响）"
+    try:
+        from torch.backends.cuda import (
+            SDPAParams, can_use_flash_attention, can_use_efficient_attention,
+        )
+    except ImportError:
+        # 老版本 torch 的 API 位置不同。不因为探针失败而挡住训练。
+        return "注意力后端：无法探测（torch.backends.cuda 缺少 can_use_* API）"
+
+    try:
+        q = torch.randn(1, 4, 128, 64, device="cuda", dtype=torch.bfloat16)
+        params = SDPAParams(q, q, q, None, 0.0, True, False)
+        flash = can_use_flash_attention(params, True)
+        mem_eff = can_use_efficient_attention(params, True)
+    except Exception as e:
+        return f"注意力后端：探测失败（{type(e).__name__}），按默认路径继续"
+
+    fa2 = "✓ 已启用 Flash Attention 2" if flash else \
+          "✗ 不可用（将退回 mem-efficient / math）"
+    extra = "，mem-efficient 也可用" if mem_eff and not flash else ""
+    return (f"注意力后端：{fa2}{extra}"
+            f"｜滑窗另走 flex_attention（见 model/layers.py 的 attn_impl）")
+
+
+# ---------------------------------------------------------------------------
 # 3. 日志
 # ---------------------------------------------------------------------------
 class _ColoredFormatter(logging.Formatter):

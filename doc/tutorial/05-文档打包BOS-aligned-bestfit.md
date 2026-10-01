@@ -115,12 +115,12 @@
 >
 > | 配置 | T | 裁剪率 |
 > |---|---|---|
-> | `full` 档 | 1024 | **0.1%** |
+> | `ablation` / `full` 档 | 1024 | **0.1%** |
 > | `smoke` 档 | 512 | **0.5%** |
 > | `debug` 档 | 128 | **4.9%** ← 真正会痛的那个 |
 > | nanochat speedrun | 2048 | ~35% |
 >
-> 也就是说：**你按 `full` 档跑的时候，这个取舍几乎不发生**。
+> 也就是说：**你按 `ablation` 或 `full` 档跑的时候，这个取舍几乎不发生**。
 > 它会在你把 T 调小、或语料变长时才真正咬人。
 > 想看它咬人的样子，跑一遍 `debug` 档（`bash script/train_base.sh debug`）。
 >
@@ -144,7 +144,7 @@ best-fit：     65% 的 token 用于训练，但 0% 跨文档
 **结论：65% 的干净数据 > 90% 的脏数据。**
 
 这个结论的前提是「污染 token 确实学不到有用的东西」。反过来说，
-**裁剪率越低，这个论证越站不住** —— 本项目 `full` 档只丢 0.1%，
+**裁剪率越低，这个论证越站不住** —— 本项目 `ablation` / `full` 档只丢 0.1%，
 那 best-fit 相对 naive 的优势就几乎全部来自「显式 `<|bos|>` 边界信号」
 这一条，而不是来自「避免污染」。这也是本章消融要实测的东西。
 
@@ -403,7 +403,7 @@ uv run python scratch/packing_demo.py
 **裁剪占比随 T 增大而下降** —— 行越长，越装得下更多完整文档。
 
 **T=256 时裁剪 4.9%** 是这个实验最重要的观察：
-本项目 `smoke` 档用 T=512、`full` 档用 T=1024，
+本项目 `smoke` 档用 T=512、`ablation` / `full` 档用 T=1024，
 都在「裁剪可忽略」的区域。如果你把 T 调到 128（debug 档），
 裁剪率会飙升，训练效率大幅下降。
 
@@ -590,7 +590,7 @@ best-fit           0.0% [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
 ```bash
 # 1) 基线（best-fit）
-uv run python -m training.train_base --mode full --no-resume --model-tag d6_base
+uv run python -m training.train_base --mode ablation --no-resume --model-tag d6_base
 
 # 2) 临时把 src/data/dataloader.py 的函数体换成 naive 版
 cp src/data/dataloader.py scratch/dataloader_bestfit.py.bak
@@ -599,7 +599,7 @@ cp src/data/dataloader.py scratch/dataloader_bestfit.py.bak
 #         pool = build_token_pool(tokenizer, split, pool_tokens=8_000_000)
 #         for x, y in naive_dataloader(tokenizer, batch_size, seq_len, pool, device):
 #             yield x, y, {"pq_idx": 0, "rg_idx": 0, "epoch": 0}
-uv run python -m training.train_base --mode full --no-resume --model-tag d6_naive
+uv run python -m training.train_base --mode ablation --no-resume --model-tag d6_naive
 
 # 3) 恢复
 cp scratch/dataloader_bestfit.py.bak src/data/dataloader.py
@@ -609,7 +609,7 @@ bash scratch/ablation.sh d6_base
 ```
 
 **预期**：`d6_naive` 的 bpb 明显更差。具体差多少取决于文档长度分布 ——
-我们的文档中位数 628 token 而 `full` 档 seq_len=1024，
+我们的文档中位数 628 token 而 `ablation` / `full` 档 seq_len=1024，
 所以约 40% 的 token 落在文档内部。
 如果换成 nanochat 那种更长的文档，差距会更大。
 
@@ -645,7 +645,7 @@ assert (x[:, 0] == bos).all()
 **坑 4：best-fit 的内层循环是 O(buffer_size)。**
 `buffer_size=1000` 时每放一篇文档要扫 1000 个，
 一行 512 token 可能放好几篇 → 每行几千次比较。
-这在 Python 侧是真实开销（`full` 档下能占到 dataloader 时间的 20%）。
+这在 Python 侧是真实开销（`ablation` / `full` 档下能占到 dataloader 时间的 20%）。
 优化方向：用两个有序列表分别存「能放下」和「放不下」的文档，
 或者按长度排序后用双指针。**nanochat 也没优化这一点**，
 因为它把 dataloader 和 GPU 计算重叠了，CPU 侧慢一点没关系。
@@ -669,7 +669,7 @@ assert (x[:, 0] == bos).all()
 
    也就是说 nanochat 自己也承认 best-fit 不是万能的 ——
    数据太少时，35% 的裁剪率不可接受（本项目语料更短，
-   这个门槛要低得多：`full` 档 T=1024 时只有 0.1%）。
+   这个门槛要低得多：`ablation` / `full` 档 T=1024 时只有 0.1%）。
 
 2. **nanochat 显式统计裁剪率**并在 docstring 里写「约 35%」，
    我们没有统计（可以自己加，见验证 1 的实验 A）。

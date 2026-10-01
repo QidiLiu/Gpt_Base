@@ -8,6 +8,7 @@
 跑法：uv run pytest tests/ -v
 """
 
+import pytest
 import torch
 
 from common.config import make_run_config, build_model_config
@@ -88,6 +89,101 @@ def test_sliding_window_only_sees_recent():
     # 但位置 left 的输出应该受影响（距离为 left，仍在窗口内）
     assert not torch.allclose(y1[0, left], y2[0, left], atol=1e-4), \
         "位置 left 的输出没被影响 -> 滑窗范围算错了"
+
+
+# ===========================================================================
+# Flash Attention 2 的保证
+# ===========================================================================
+def test_causal_path_can_select_flash_backend():
+    """
+    全上下文路径**必须能用** Flash Attention 2，且 attn_impl 不影响它。
+
+    ── 为什么这条是判据而不只是注释？───────────────────────────────
+    `F.scaled_dot_product_attention` 会在所有可用后端里**静默**挑一个。
+    实测本项目全上下文路径一直都在用 FA2 —— 但从来没有任何东西验证过，
+    只是碰巧如此。哪天某个 shape / dtype / torch 版本让它挑不满足，
+    就会悄悄退回 mem-efficient 或 math，而且**不报错**。
+    教程卷3 第20章的「性能悬崖」就是这么来的。
+
+    这里用 `can_use_flash_attention(SDPAParams(...))` 直接问 PyTorch：
+    给定真实形状，flash 后端到底可不可用。这是「保证」能被测量的形式。
+    """
+    if not torch.cuda.is_available():
+        pytest.skip("没有 CUDA，无法探测 attention 后端")
+    try:
+        from torch.backends.cuda import SDPAParams, can_use_flash_attention
+    except ImportError:
+        pytest.skip("这个 torch 版本没有 torch.backends.cuda.can_use_flash_attention")
+
+    # 覆盖三档真实形状 + GQA 场景
+    cases = [
+        # (n_head, head_dim, T, n_kv_head)  —— debug/smoke/ablation/full
+        (1, 32, 128, 1), (4, 32, 512, 4), (6, 64, 1024, 6), (12, 64, 1024, 12),
+        (12, 64, 1024, 4),   # full 档开 GQA 时
+    ]
+    for n_head, head_dim, T, n_kv_head in cases:
+        q = torch.randn(1, n_head, T, head_dim, device="cuda", dtype=torch.bfloat16)
+        k = torch.randn(1, n_kv_head, T, head_dim, device="cuda", dtype=torch.bfloat16)
+        v = torch.randn_like(k)
+        params = SDPAParams(q, k, v, None, 0.0, True, n_head != n_kv_head)
+        assert can_use_flash_attention(params, True), (
+            f"形状 (H={n_head}, kv={n_kv_head}, T={T}, D={head_dim}) 下 "
+            f"flash 后端不可用 —— 全上下文路径会静默退回 mem-efficient。"
+            f"本项目的 FA2 保证就失效了。"
+        )
+
+
+def test_sliding_window_paths_are_numerically_equivalent():
+    """
+    flex_attention（FA2 风格）与显式 mask 两条滑窗路径必须数值一致。
+
+    ── 为什么这是必须的？────────────────────────────────────────
+    `attn_impl` 是个消融开关，两条路径都在真实训练里跑。它们的数值必须
+    相同，否则「同一模型换个开关跑出不同的 bpb」就无法区分是
+    「开关的架构差异」还是「两条 kernel 算错了」—— 消融结论就废了。
+
+    实测两条路的差异在 bf16 舍入量级（相对误差 < 1e-3），因为
+    flex 走的是块级累加、SDPA 走的是逐元素累加，累加顺序不同。
+    所以判据用**相对容差**而不是 allclose 的默认绝对容差。
+    """
+    if not torch.cuda.is_available():
+        pytest.skip("flex_attention 需要 CUDA 才能编译")
+    from model.layers import attend_sliding_flex, attend_sliding_sdpa, _flex_attention
+    if _flex_attention() is None:
+        pytest.skip("flex_attention 编译不可用（缺 C 编译器？），只剩显式 mask 路径")
+
+    torch.manual_seed(0)
+    for B, H, T, D, left in [(2, 4, 256, 32, 64), (1, 2, 128, 64, 32),
+                             (3, 6, 512, 64, 128)]:
+        q = torch.randn(B, T, H, D, device="cuda", dtype=torch.bfloat16)
+        k = torch.randn(B, T, H, D, device="cuda", dtype=torch.bfloat16)
+        v = torch.randn(B, T, H, D, device="cuda", dtype=torch.bfloat16)
+        got = attend_sliding_flex(q, k, v, left).float()
+        ref = attend_sliding_sdpa(q, k, v, left).float()
+        scale = ref.abs().max().clamp_min(1e-6)
+        rel = (got - ref).abs().max() / scale
+        assert rel < 1e-2, (
+            f"B{B} H{H} T{T} D{D} left={left}: 两条滑窗路径相对误差 {rel:.5f} "
+            f"过大（阈值 1e-2）。bf16 舍入应在 1e-3 量级。"
+        )
+
+
+def test_attn_impl_does_not_change_full_context_result():
+    """
+    全上下文（left >= T）的结果与 attn_impl 无关 —— 它永远走 SDPA flash。
+
+    这条钉住一个设计决定：flex_attention 在全上下文上没有收益
+    （is_causal=True 本来就选中 flash），所以不应该把它也换掉。
+    若哪天真换成「全上下文也走 flex」，这个测试会提醒你两者的差异。
+    """
+    torch.manual_seed(0)
+    B, T, H, D = 2, 64, 4, 16
+    q = torch.randn(B, T, H, D)
+    k = torch.randn(B, T, H, D)
+    v = torch.randn(B, T, H, D)
+    a = attend(q, k, v, (T, 0), attn_impl="flex")
+    b = attend(q, k, v, (T, 0), attn_impl="sdpa")
+    assert torch.equal(a, b), "attn_impl 影响了全上下文路径的结果（它不该影响）"
 
 
 def test_kv_cache_writes_all_batches():

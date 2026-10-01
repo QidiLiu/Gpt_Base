@@ -21,12 +21,13 @@ from evaluation.metrics import compute_pass_at_k
 from inference.engine import Engine, KVCache, render_chat_prompt
 from common.checkpoint import load_checkpoint, find_latest
 from model.gpt import build_model
-from common.config import ModelConfig
+from common.config import ModelConfig, default_tag
 
 
 def parse_args():
     p = argparse.ArgumentParser(description="评测 SFT 模型")
-    p.add_argument("--mode", default="smoke", choices=["debug", "smoke", "full"])
+    p.add_argument("--mode", default="smoke",
+                   choices=["debug", "smoke", "ablation", "full"])
     p.add_argument("--tag", default=None)
     p.add_argument("--mc-examples", type=int, default=300)
     p.add_argument("--gsm8k-examples", type=int, default=40)
@@ -36,7 +37,7 @@ def parse_args():
 
 
 def load_sft(mode, tag, device):
-    base_tag = tag or {"debug": "d2", "smoke": "d4", "full": "d6"}[mode]
+    base_tag = tag or default_tag(mode)
     runs = get_runs_dir()
     sft_dir = os.path.join(runs, "sft_checkpoints", base_tag)
     if not (os.path.isdir(sft_dir) and find_latest(sft_dir) is not None):

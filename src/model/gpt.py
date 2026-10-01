@@ -235,6 +235,8 @@ class GPT(nn.Module):
             f"  QK-Norm 缩放   : {cfg.qk_norm_scale if cfg.qk_norm_scale > 0 else '关闭'}",
             f"  激活           : {cfg.activation}",
             f"  滑窗模式       : {cfg.window_pattern} -> {self.window_sizes}",
+            f"  滑窗实现       : {getattr(cfg, 'attn_impl', 'flex')}"
+            f"（全上下文固定走 SDPA flash = FA2，不受此项影响）",
             f"  权重绑定       : {cfg.tie_embeddings}",
             f"  logit softcap  : {cfg.logit_softcap if cfg.logit_softcap > 0 else '关闭'}",
         ]

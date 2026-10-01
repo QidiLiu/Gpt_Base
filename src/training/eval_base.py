@@ -18,11 +18,13 @@ from data.tokenizer import get_token_bytes
 from data.dataloader import make_dataloader
 from data.tasks import MMLU, ARC
 from evaluation.metrics import evaluate_bpb, evaluate_multiple_choice
+from common.config import default_tag
 
 
 def parse_args():
     p = argparse.ArgumentParser(description="评测基座模型")
-    p.add_argument("--mode", default="smoke", choices=["debug", "smoke", "full"])
+    p.add_argument("--mode", default="smoke",
+                   choices=["debug", "smoke", "ablation", "full"])
     p.add_argument("--tag", default=None)
     p.add_argument("--eval-tokens", type=int, default=2 * 524288,
                    help="val bpb 用多少 token 统计")
@@ -37,7 +39,7 @@ def main():
     args = parse_args()
     device_type = autodetect_device_type()
     _, _, _, _, device = compute_init(device_type)
-    tag = args.tag or {"debug": "d2", "smoke": "d4", "full": "d6"}[args.mode]
+    tag = args.tag or default_tag(args.mode)
 
     log0(f"载入 {tag} ...")
     model, tokenizer, meta = load_latest(get_runs_dir(), tag, device)
@@ -94,8 +96,8 @@ def main():
     # ---- 4) 与 nanochat 的可比性说明 ----
     log0("\n── 4) 数字能不能和 nanochat 比？ " + "─" * 32)
     log0("  不能。原因有三：")
-    log0("   (a) 模型规模差 2 个数量级（d6 vs d24，17M vs ~500M 参数）")
-    log0("   (b) 总训练 FLOPs 差约 1250 倍（2.6e16 vs 4e19）")
+    log0("   (a) 模型规模差一个数量级（ablation 档 d6 = 17M，full 档 d24 = 182M scaling 参数）")
+    log0("   (b) 总训练 FLOPs 差约两个数量级")
     log0("   (c) 数据集不同（本项目 ClimbMix 子集 vs nanochat 同源但分片数不同）")
     log0("  bpb 的价值在于「同一模型开/关某个 trick 后的相对差异」，而不是绝对值。")
     log0("  那些差异才 0.01-0.05 量级 —— 这正是教程要你亲手测出来的东西。")

@@ -20,12 +20,13 @@ from inference.engine import Engine, render_chat_prompt
 from common.checkpoint import load_checkpoint, find_latest
 from model.gpt import build_model
 from data.tokenizer import get_tokenizer
-from common.config import ModelConfig
+from common.config import ModelConfig, default_tag
 
 
 def parse_args():
     p = argparse.ArgumentParser(description="和模型聊天")
-    p.add_argument("--mode", default="smoke", choices=["debug", "smoke", "full"])
+    p.add_argument("--mode", default="smoke",
+                   choices=["debug", "smoke", "ablation", "full"])
     p.add_argument("--tag", default=None, help="基座 tag（决定用哪个 SFT 模型）")
     p.add_argument("-p", "--prompt", default=None, help="单次提问（不给则进入交互模式）")
     p.add_argument("-t", "--temperature", type=float, default=0.7)
@@ -40,7 +41,7 @@ def parse_args():
 def load_sft_model(mode, tag, device):
     """优先加载 SFT 后的模型；没跑过 SFT 就回落到基座。"""
     import os
-    base_tag = tag or {"debug": "d2", "smoke": "d4", "full": "d6"}[mode]
+    base_tag = tag or default_tag(mode)
     runs = get_runs_dir()
     sft_dir = os.path.join(runs, "sft_checkpoints", base_tag)
     tokenizer = get_tokenizer()

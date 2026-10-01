@@ -81,7 +81,7 @@ bash script/progress.sh        # 告诉你哪一章还没做完
 
 ```bash
 uv run pytest tests/ -q
-# 预期：69 failed, 116 passed, 7 skipped
+# 预期：71 failed, 122 passed, 7 skipped
 ```
 
 > ### ⚠️ 这 69 个 `failed` 是**正确**的
@@ -93,25 +93,30 @@ uv run pytest tests/ -q
 > FAILED tests/test_data.py::test_every_row_starts_with_bos - NotImplementedError: 待实现：make_dataloader ...
 > ```
 >
-> `git checkout solution` 后再跑会变成 `190 passed, 2 skipped` —— 那才是全绿。
+> `git checkout solution` 后再跑会变成 `198 passed, 2 skipped` —— 那才是全绿。
 > **在 `main` 上看到 0 failed 才说明你走错了分支。**
 
 ---
 
 ## 你的硬件够用吗？
 
-项目按 16 GB 单卡（RTX 4060 Ti）设计。三档规模：
+项目按 16 GB 单卡（RTX 4060 Ti）设计。四档规模：
 
 | 档位 | 模型 | 步数 | 耗时 | 峰值显存 |
 |---|---|---|---|---|
 | `debug` | d2, 32 维, 1 头 | 20 | **秒级** | < 100 MB |
 | `smoke` | d4, 128 维, 4 头 | 896 | **2-3 分钟** | 650 MB |
-| `full` | d6, 384 维, 6 头 | 3096 | **20-25 分钟** | ~3 GB |
+| `ablation` | d6, 384 维, 6 头 | 3096 | **约 1 小时** | 5.6 GB |
+| `full` | d24, 768 维, 12 头 | 2088 | **约 128 小时** | 7.5 GB |
+
+`ablation` 是**消融专用**档，基线保持中性（Muon `simple` + trick 全关）；
+`full` 是**消融后的最佳组合**（trick 全开 + Muon `advanced`），只训一次。
+两者回答的问题不同，所以超参数取法正好相反。
 
 > **一个必须先接受的事实**
 >
 > 16 GB 消费卡比 nanochat 的目标硬件（8×H100 80GB）弱约 **1250 倍（FLOPs）**。
-> 所以 `full` 档训出来的模型很弱，生成的文本只是「有点像英文」。
+> 所以 `ablation` 档训出来的模型很弱，生成的文本只是「有点像英文」。
 > 这不影响本教程的价值 —— 价值在**消融实验**：
 > 同一个模型，开/关某个 trick，val bpb 差 0.01-0.09。
 > 那些小数字才是你要亲手测出来的东西。
@@ -223,7 +228,7 @@ src/
 | **GELU 替代 ReLU²** | 1.7240 | **+0.0104** | relu² 略好 |
 | 去掉 QK Norm | 1.7098 | −0.0038 | 噪声（\|Δ\|<0.02，要重跑） |
 
-（这是 smoke 档实测。`full` 档数字会不同，量级关系应该一致。）
+（这是 smoke 档实测。`ablation` 档数字会不同，量级关系应该一致。）
 
 ---
 
@@ -278,7 +283,8 @@ bash script/eval_sft.sh   smoke   # 多选准确率 + GSM8K pass@1 + 多轮展�
 bash script/chat.sh       smoke   # 交互式聊天
 ```
 
-档位换成 `debug`（秒级，适合单步调试）或 `full`（20-25 分钟）。
+档位换成 `debug`（秒级，适合单步调试）或 `ablation`（d6，约 1 小时，消融专用）。
+想训最终的 d24 模型用 `full`（约 128 小时，只训一次）。
 
 > ⚠️ **手敲完卷 1-4 之前，这些脚本跑不通是正常的** ——
 > 它们依赖你还没实现的那部分。等 `bash script/progress.sh` 全绿，它们就能跑。
@@ -293,7 +299,7 @@ bash script/chat.sh       smoke   # 交互式聊天
 uv run pytest tests/ -v
 ```
 
-182 个测试：卷0 6 + 卷1 31（21 + 精确续训 10）+ 卷2-3 25 + 卷4 14
+190 个测试：卷0 11 + 卷1 31（21 + 精确续训 10）+ 卷2-3 28 + 卷4 14 + 只读护栏 106
 + 只读代码护栏 103（metrics 11 + checkpoint 15 + engine 50 + tasks 27）
 另有 10 个判据自检（`tests/test_judging_soundness.py`），
 全量 `pytest tests/` 收集到 192 个。

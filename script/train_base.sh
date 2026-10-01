@@ -4,8 +4,11 @@
 # 用法：
 #   bash script/train_base.sh            # 默认 smoke
 #   bash script/train_base.sh smoke
-#   bash script/train_base.sh full       # 20-25 分钟
+#   bash script/train_base.sh ablation   # d6，约 1 小时，消融专用
+#   bash script/train_base.sh full       # d24，约 128 小时，消融后的最佳组合
 #   bash script/train_base.sh smoke --all-tricks --muon-advanced   # 透传消融开关
+#
+# ⚠ full 档首次运行会下载 65 个 shard（约 5.9 GB）。
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 MODE="${1:-smoke}"; [ $# -gt 0 ] && shift || true
@@ -19,6 +22,9 @@ info "设备   : $(uv run python -c 'import torch;print(torch.cuda.get_device_na
 say "步骤 1/3  下载预训练数据（$SHARDS 个训练 shard + 1 个验证 shard）"
 info "每个 shard 约 92 MB。最后一个 shard 固定作为验证集，不参与训练。"
 info "已经下过的会自动跳过，可以放心重复执行。"
+if [ "$SHARDS" -gt 8 ]; then
+  info "数据量大，下载可能需要一段时间（已下过的会自动跳过）"
+fi
 if [ "$SKIP_DOWNLOAD" != "1" ]; then
   python -m data.dataset -n "$SHARDS" -w 4
 fi

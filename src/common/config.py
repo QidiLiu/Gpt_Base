@@ -42,6 +42,17 @@ class ModelConfig:
     qk_norm_scale: float = 1.2    # 0.0 = 不做 QK norm
     window_pattern: str = "L"     # "L" 全上下文 | "SSL" 滑窗平铺（滑窗需要 FA3）
 
+    # ---- 滑窗用哪条实现路径（消融开关，见 model/layers.py:attend）----
+    # "flex"  用 torch.nn.attention.flex_attention —— 编译出的是 FA2 风格的
+    #         kernel，原生支持 block_mask 滑窗。本卡实测滑窗 0.50ms → 0.18ms。
+    # "sdpa"  原始路径：物化 (T,T) 的 bool mask，SDPA 退回 mem-efficient 后端。
+    #         **保留它不是为了性能，是为了教程卷3 第 20 章**：那一章整章教的
+    #         就是「滑窗的性能悬崖」，两条路径都在才能把 2.8× 的差距测出来。
+    #         全换成 flex 之后悬崖就没了，第 20 章失去对比对象。
+    # 注意：全上下文（window >= T）永远走 is_causal=True 的 SDPA flash 快路径，
+    # 不受这个开关影响 —— 那条路径本来就是 FA2，flex 在那里没有收益。
+    attn_impl: str = "flex"
+
     # ---- MLP（消融：可选 "gelu"）----
     activation: str = "relu2"     # "relu2" | "gelu"
 
@@ -211,32 +222,64 @@ class RunConfig:
 
 
 # ===========================================================================
-# 4) 三档预设
+# 4) 四档预设
 # ===========================================================================
 # 每一档都刻意选了不同的 aspect_ratio / head_dim，
 # 这样你能同时看到「深度怎么影响宽度」和「头数是独立旋钮」。
 #
-#   档位   depth aspect head_dim  n_embd n_head  用途
-#   debug    2     16      32       32     1     单步调试，什么都极小
-#   smoke    4     32      32      128     4     2-3 分钟全流程，每章验证用
-#   full     6     64      64      384     6     20-25 分钟，训出一个弱但能聊的模型
+#   档位      depth aspect head_dim  n_embd n_head  用途
+#   debug       2     16      32       32     1     单步调试，什么都极小
+#   smoke       4     32      32      128     4     2-3 分钟全流程，每章验证用
+#   ablation    6     64      64      384     6     消融实验专用（见下）
+#   full       24     32      64      768    12     消融后的最佳组合，只训一次
 #
-# 16 GB 显存的实测量级（详见 doc/tutorial/01）：
-#   full 档 d6 / seq1024 / vocab16384 约 1.7 GB 权重+优化器，激活约 3 GB
+# ── 为什么有 ablation 和 full 两档「正式」规模？──────────────────────
+#   两者回答的是**不同问题**，所以超参数的取法正好相反：
+#
+#   ablation (d6)  回答「某个 trick 值多少钱」。
+#       基线必须保持**中性**：Muon simple + 5 个 trick 全关。
+#       一旦基线本身已经开了 trick，测出来的是「trick A 相对 trick A+B」，
+#       单项贡献就被稀释了。规模也要够大到架构差异能穿透初始化噪声 ——
+#       debug 档（20 步）实测五组 bpb 完全一致，什么都测不出来。
+#
+#   full (d24)  回答「最终模型能有多好」。
+#       所以它开满 nanochat 的生产配置：5 个残差流 trick 全开 + Muon advanced。
+#       只训一次，不做对照，所以不需要中性。
+#
+# ── full 档的实测数字（RTX 4060 Ti 16GB / d24 / seq1024 / dbs=4）────
+#   参数量       195M（trick 全关）→ 346M（全开，value_embeds 单独 +151M）
+#   峰值显存     5.53 GiB（全关）→ 7.46 GiB（全开）
+#   吞吐         10,015 tok/s（全关+simple）→ 4,754 tok/s（全开+advanced）
+#   总耗时       61 h（全关+simple）→ 67 h（全开+simple）→ 128 h（全开+advanced）
+#
+#   注意两个反直觉的结论：
+#     · 5 个 trick 只让耗时 +10%，但让显存 +1.9 GiB（value_embeds 是 12 张
+#       16384×768 的查表，走 AdamW，各存 fp32 参数+梯度+两个矩）。
+#     · 真正的开销是 **Muon advanced（+62%）**，不是 trick。
+#       想省时间就改 muon_flavor="simple"，不要动 trick 开关。
+#
+#   device_batch_size 的实测（trick 全开 + advanced）：
+#     dbs=4 → 7.46 GiB 峰值，grad_accum=256
+#     dbs=8 → 见 doc/tutorial/01 的显存表，仍在 16GB 以内且吞吐更高
+#     dbs=16 → 会 OOM（本卡 16 GiB）
 PRESETS = {
     "debug": dict(
+        tag="d2", depth=2,
         aspect_ratio=16, head_dim=32, sequence_len=128, vocab_size=8192,
         device_batch_size=4, total_batch_size=2048, target_param_data_ratio=1.0,
         num_iterations=20, eval_every=10, sample_every=10, log_every=1,
         data_shards=1,
     ),
     "smoke": dict(
+        tag="d4", depth=4,
         aspect_ratio=32, head_dim=32, sequence_len=512, vocab_size=8192,
         device_batch_size=8, total_batch_size=16384, target_param_data_ratio=8.0,
         num_iterations=-1, eval_every=100, sample_every=200, log_every=20,
         data_shards=1,
     ),
-    "full": dict(
+    # ── 消融专用：d6，基线保持中性（Muon simple + trick 全关）──────
+    "ablation": dict(
+        tag="d6", depth=6,
         aspect_ratio=64, head_dim=64, sequence_len=1024, vocab_size=16384,
         # total_batch_size(65536) = 16 × 1024 × 4，所以 device_batch_size
         # 必须是 sequence_len 的倍数关系的因子（否则 resolve_scaling 会 assert）
@@ -244,7 +287,53 @@ PRESETS = {
         num_iterations=-1, eval_every=200, sample_every=400, log_every=20,
         data_shards=4,
     ),
+    # ── 消融后的最佳组合：d24，只训一次 ────────────────────────────
+    # 形状对齐 nanochat 的 d24：24 层 × 768 维 × 12 头，182M scaling 参数。
+    # aspect_ratio 必须从 ablation 档的 64 改成 32 —— 沿用 64 会得到 1536 维
+    # / 705M 参数，光权重+梯度+Muon 动量就吃掉 10.5 GiB，本卡放不下激活。
+    "full": dict(
+        tag="d24", depth=24,
+        aspect_ratio=32, head_dim=64, sequence_len=1024, vocab_size=16384,
+        # total_batch_size 显式钉死，不留 -1：preset 应该是可复现的快照，
+        # 而不是 resolve_scaling 公式的输出。1048576 来自推导
+        #   B_ref × (target_tokens / D_ref)^0.383 = 2^19 × (2.19B/330M)^0.383
+        # 并向上取整到 2 的幂。必须被 device_batch_size×sequence_len 整除：
+        #   1048576 / (4 × 1024) = 256 ✓（grad_accum=256）
+        device_batch_size=4, total_batch_size=1048576,
+        target_param_data_ratio=12.0,   # → 2,189,426,688 tokens / 2088 步
+        num_iterations=-1,
+        eval_every=200, sample_every=400, log_every=50,
+        # 100+ 小时的 run 必须定期存档。save_every=-1（默认）意味着崩在
+        # 第 100 小时就只剩磁盘上的垃圾。
+        save_every=200,
+        # 2.19B tokens / 每个 shard 约 35M 有效 token → 需要约 64 个 shard
+        # 才够训一轮不重复。4 个 shard 会重复约 10 轮，val bpb 偏乐观。
+        data_shards=64,
+        # ↓ 消融结论：nanochat 生产配置。改这几个开关就能换配置，
+        #   不必动上面的形状部分。
+        muon_flavor="advanced",
+        use_resid_lambdas=True, use_x0_lambdas=True, use_value_embeds=True,
+        use_smear=True, use_backout=True,
+    ),
 }
+
+
+def default_tag(mode: str) -> str:
+    """
+    档位 -> 存档目录名。
+
+    单一事实来源。script/_common.sh 里也有一份 TAG 映射（bash 读不到
+    Python），两者由 tests/test_presets.py 的 test_common_sh_matches_presets
+    做交叉校验 —— 这正是本项目的纪律：可证伪的声明就用可证伪的方式守住。
+    """
+    assert mode in PRESETS, f"mode 必须是 {list(PRESETS)} 之一，得到 {mode}"
+    return str(PRESETS[mode]["tag"])
+
+
+def default_depth(mode: str) -> int:
+    """档位 -> 唯一旋钮 depth 的默认值。"""
+    assert mode in PRESETS, f"mode 必须是 {list(PRESETS)} 之一，得到 {mode}"
+    return int(PRESETS[mode]["depth"])
 
 
 def make_run_config(mode: str, depth: int | None = None,
@@ -254,42 +343,47 @@ def make_run_config(mode: str, depth: int | None = None,
 
     vocab_size 传 None 时用预设里的期望值（脚本会传 tokenizer 的真实值，
     两者不一致会直接 assert 报错，防止训出来的模型和 tokenizer 对不上）。
+
+    ── 分发机制：preset 的键和调用方的 overrides 走**同一条**路径 ──
+      之前只有 overrides 走分发循环，preset 里多写的键会被**静默忽略** ——
+      于是「往 preset 里加一个 use_smear=True 却什么都没发生」是完全可能的，
+      而且没有任何报错。加 muon_flavor= 之前没人发现，因为那时候 preset
+      里的键刚好都显式传给了 ModelConfig / TrainConfig 构造函数。
+      现在统一成 settings = {**preset, **overrides} 再一起分发。
     """
     assert mode in PRESETS, f"mode 必须是 {list(PRESETS)} 之一，得到 {mode}"
     p = dict(PRESETS[mode])
     expected_vocab = p.pop("vocab_size")
     shards = p.pop("data_shards")
+    p.pop("tag")
+    p.pop("depth")          # 已经用来推导 n_layer 了，不参与下面的分发
+    aspect = p.pop("aspect_ratio")     # 只用来推宽度，不是 ModelConfig 的字段
 
-    depth = depth if depth is not None else (2 if mode == "debug" else 4 if mode == "smoke" else 6)
+    depth = depth if depth is not None else default_depth(mode)
     vocab_size = vocab_size if vocab_size is not None else expected_vocab
 
     model = build_model_config(
-        depth=depth,
-        aspect_ratio=p["aspect_ratio"],
-        head_dim=p["head_dim"],
-        sequence_len=p["sequence_len"],
-        vocab_size=vocab_size,
+        depth=depth, aspect_ratio=aspect, head_dim=p["head_dim"],
+        sequence_len=p["sequence_len"], vocab_size=vocab_size,
     )
-    train = TrainConfig(
-        device_batch_size=p["device_batch_size"],
-        total_batch_size=p["total_batch_size"],
-        num_iterations=p["num_iterations"],
-        target_param_data_ratio=p["target_param_data_ratio"],
-        eval_every=p["eval_every"],
-        sample_every=p["sample_every"],
-        log_every=p["log_every"],
-    )
-    for k, v in overrides.items():
-        if hasattr(train, k):
-            setattr(train, k, v)
-        elif hasattr(model, k):
+    train = TrainConfig()
+    optim = OptimConfig()
+
+    for k, v in {**p, **overrides}.items():
+        if hasattr(model, k):
             setattr(model, k, v)
+        elif hasattr(train, k):
+            setattr(train, k, v)
+        elif k.startswith("muon_") and hasattr(optim.muon, k[len("muon_"):]):
+            setattr(optim.muon, k[len("muon_"):], v)
+        elif k.startswith("adamw_") and hasattr(optim.adamw, k[len("adamw_"):]):
+            setattr(optim.adamw, k[len("adamw_"):], v)
         else:
             raise ValueError(f"未知的配置项: {k}")
 
     return RunConfig(
-        mode=mode, aspect_ratio=p["aspect_ratio"], head_dim=p["head_dim"],
-        model=model, optim=OptimConfig(), train=train,
+        mode=mode, aspect_ratio=aspect, head_dim=p["head_dim"],
+        model=model, optim=optim, train=train,
         vocab_size=vocab_size, data_shards=shards,
     )
 

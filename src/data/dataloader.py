@@ -15,12 +15,26 @@ naive 做法（nanoGPT 的做法）：
     1) 每行开头放一个 <|bos|>
     2) 依次把文档塞进这一行，**优先选「能完整放下的最长文档」**（best-fit）
     3) 都放不下时，裁剪**最短的**文档填满剩余空间
-    结果：利用率 100%（无 padding），但约 35% token 在裁剪时被丢掉。
+    结果：利用率 100%（无 padding，零 padding token）。
 
-为什么愿意丢 35% 的 token 换「文档边界干净」？
-    因为那 35% 如果留着，模型会花容量去学「跨文档续写」这种
-    在真实推理时永远不会遇到的模式。丢掉的 token 换成更干净的训练信号，
-    净收益为正。nanochat 的 leaderboard 实验支持这个取舍。
+⚠ 关于「丢了多少 token」—— 这里必须说清楚口径，因为很容易记错：
+    「best-fit 会丢掉约 35% 的 token」这句话来自 **nanochat 的 docstring**，
+    它的条件是 **T=2048 + 全量语料**。**那不是本项目的数字。**
+
+    本项目的实测（doc/tutorial/05 第「概念：什么时候会真的丢 token」一节）：
+        档位                T     裁剪率
+        smoke(d4)         512     ~1%
+        ablation(d6)     1024     0.1%
+        full(d24)        1024     0.1%
+    原因是本项目语料的文档中位数只有 628 token（见 dataset.py 开头），
+    远小于 T，best-fit 几乎总是能找到「能完整放下」的文档。
+
+    所以本项目里 best-fit 的取舍是**名义上的**：几乎不丢 token，
+    却仍然拿到了「文档边界干净」这个好处。代价只是 O(n·buffer) 的
+    Python 线性扫描（见下面的 pack 行）。
+
+    那 35% 的论证还成立吗？只在「真的要丢那么多」时才值得讨论 ——
+    也就是 nanochat 的 T=2048 场景。详见教程 05 章。
 """
 
 import torch
@@ -99,7 +113,9 @@ def make_dataloader(tokenizer, batch_size: int, seq_len: int, split: str,
 
     (2) 为什么全程不 padding？
         padding token 会让模型在推理时遇到从未见过的 id 分布。
-        宁可裁掉 35% 的 token，也要保证 100% 利用率 + 无 padding。
+        所以裁剪优先于 padding —— 宁可丢掉一部分 token，也要保证
+        100% 利用率 + 无 padding。
+        （本项目实测的裁剪率只有 0.1%，见模块 docstring 的口径说明。）
 
     (3) 为什么用「先建 CPU row_buffer，再一次性搬到 GPU」？
         逐行 torch.tensor(...) 会产生几千次小 H2D 拷贝，每次都有

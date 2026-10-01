@@ -4,8 +4,8 @@
 # 用法：
 #   bash script/train_base.sh            # 默认 smoke
 #   bash script/train_base.sh smoke
-#   bash script/train_base.sh ablation   # d6，约 1 小时，消融专用
-#   bash script/train_base.sh full       # d24，约 128 小时，消融后的最佳组合
+#   bash script/train_base.sh ablation   # d6，约 44 分钟，消融专用
+#   bash script/train_base.sh full       # d24，约 41 小时，消融后的最佳组合
 #   bash script/train_base.sh smoke --all-tricks --muon-advanced   # 透传消融开关
 #
 # ⚠ full 档首次运行会下载 65 个 shard（约 5.9 GB）。

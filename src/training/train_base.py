@@ -52,7 +52,7 @@ def parse_args():
     p.add_argument("--mode", default="smoke",
                    choices=["debug", "smoke", "ablation", "full"],
                    help="档位：debug=单步调试 / smoke=2-3分钟 / "
-                        "ablation=d6消融(约1小时) / full=d24最佳组合(约128小时)")
+                        "ablation=d6消融(约44分钟) / full=d24最佳组合(约41小时)")
     p.add_argument("--depth", type=int, default=None, help="覆盖档位默认深度（唯一旋钮）")
     # 消融开关：直接覆盖 ModelConfig 的字段
     for flag, typ, help_ in [

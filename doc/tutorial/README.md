@@ -81,7 +81,7 @@ bash script/progress.sh        # 告诉你哪一章还没做完
 
 ```bash
 uv run pytest tests/ -q
-# 预期：71 failed, 122 passed, 7 skipped
+# 预期：71 failed, 123 passed, 7 skipped
 ```
 
 > ### ⚠️ 这 69 个 `failed` 是**正确**的
@@ -93,7 +93,7 @@ uv run pytest tests/ -q
 > FAILED tests/test_data.py::test_every_row_starts_with_bos - NotImplementedError: 待实现：make_dataloader ...
 > ```
 >
-> `git checkout solution` 后再跑会变成 `198 passed, 2 skipped` —— 那才是全绿。
+> `git checkout solution` 后再跑会变成 `199 passed, 2 skipped` —— 那才是全绿。
 > **在 `main` 上看到 0 failed 才说明你走错了分支。**
 
 ---
@@ -106,8 +106,8 @@ uv run pytest tests/ -q
 |---|---|---|---|---|
 | `debug` | d2, 32 维, 1 头 | 20 | **秒级** | < 100 MB |
 | `smoke` | d4, 128 维, 4 头 | 896 | **2-3 分钟** | 650 MB |
-| `ablation` | d6, 384 维, 6 头 | 3096 | **约 1 小时** | 5.6 GB |
-| `full` | d24, 768 维, 12 头 | 2088 | **约 128 小时** | 7.5 GB |
+| `ablation` | d6, 384 维, 6 头 | 3096 | **约 44 分钟** | 6.2 GB |
+| `full` | d24, 768 维, 12 头 | 2088 | **约 41 小时** | 8.9 GB |
 
 `ablation` 是**消融专用**档，基线保持中性（Muon `simple` + trick 全关）；
 `full` 是**消融后的最佳组合**（trick 全开 + Muon `advanced`），只训一次。
@@ -283,8 +283,8 @@ bash script/eval_sft.sh   smoke   # 多选准确率 + GSM8K pass@1 + 多轮展�
 bash script/chat.sh       smoke   # 交互式聊天
 ```
 
-档位换成 `debug`（秒级，适合单步调试）或 `ablation`（d6，约 1 小时，消融专用）。
-想训最终的 d24 模型用 `full`（约 128 小时，只训一次）。
+档位换成 `debug`（秒级，适合单步调试）或 `ablation`（d6，约 44 分钟，消融专用）。
+想训最终的 d24 模型用 `full`（约 41 小时，只训一次）。
 
 > ⚠️ **手敲完卷 1-4 之前，这些脚本跑不通是正常的** ——
 > 它们依赖你还没实现的那部分。等 `bash script/progress.sh` 全绿，它们就能跑。
@@ -299,7 +299,7 @@ bash script/chat.sh       smoke   # 交互式聊天
 uv run pytest tests/ -v
 ```
 
-190 个测试：卷0 11 + 卷1 31（21 + 精确续训 10）+ 卷2-3 28 + 卷4 14 + 只读护栏 106
+191 个测试：卷0 12 + 卷1 31（21 + 精确续训 10）+ 卷2-3 28 + 卷4 14 + 只读护栏 106
 + 只读代码护栏 103（metrics 11 + checkpoint 15 + engine 50 + tasks 27）
 另有 10 个判据自检（`tests/test_judging_soundness.py`），
 全量 `pytest tests/` 收集到 192 个。

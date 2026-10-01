@@ -9,7 +9,12 @@ source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 MODE="${1:-smoke}"; [ $# -gt 0 ] && shift || true
 
-[ -f "runs/base_checkpoints/$TAG/model_"*.pt ] 2>/dev/null \
+# ⚠ 这里必须用 compgen 而不是 `[ -f glob ]`。真实事故：
+#   写成 `[ -f "runs/.../model_"*.pt ]` 时，只要那个目录下有 **2 个以上**
+#   checkpoint（full 档 save_every=200 必然产生多个），glob 就展开成多个参数，
+#   bash 内建 `[` 报 "binary operator expected" 并返回退出码 2，于是 `|| die`
+#   触发 —— **明明有存档，却报「没有找到」**。compgen 不受参数个数影响。
+compgen -G "runs/base_checkpoints/$TAG/model_*.pt" > /dev/null \
   || die "没有找到 $TAG 的 checkpoint。先跑：bash script/train_base.sh $MODE"
 
 say "评测基座模型 $TAG"

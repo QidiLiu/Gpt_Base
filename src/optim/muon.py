@@ -151,7 +151,18 @@ def muon_step(stacked_grad, stacked_param, momentum_buf, second_moment_buf,
 
     # ---- 5) 权重衰减 + 参数更新 ----------------------------------------
     lr = hp["lr"].to(g.dtype)
-    if cfg.flavor != "simple" and cfg.use_cautious_wd and hp["wd"] != 0:
+    # ★ 这里**不能**再判断 `hp["wd"] != 0`。──────────────────────────
+    #   `hp["wd"]` 是一个 0-D **tensor**，拿它做 Python 的 if 判断就是
+    #   dynamo 眼里的 "Data-dependent branching"，而 compile_or_eager 用的是
+    #   `fullgraph=True` —— 遇到这种分支直接拒绝编译，于是整个 muon_step
+    #   静默回落到 eager。实测代价（d24 / trick 全开）：
+    #       带这个判断   862 ms/micro  →  full 档 128 小时
+    #       去掉这个判断 710 ms/micro  →  full 档 105 小时
+    #   而且它**不报错**，只在日志里留一行「回落到 eager」，非常容易漏看。
+    #
+    #   去掉是否安全？wd == 0 时 mask 那一项是 0*param*mask == 0，
+    #   数值上完全等价。mask 的计算本身是廉价的逐元素乘法，不构成浪费。
+    if cfg.flavor != "simple" and cfg.use_cautious_wd:
         # ── 谨慎权重衰减 ──────────────────────────────────────
         # 普通 WD 惩罚所有参数，即使它这一步在往「正确方向」走。
         # 谨慎 WD 只在「梯度与参数同号」时衰减，也就是

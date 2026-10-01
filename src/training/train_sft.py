@@ -33,12 +33,14 @@ from data.tokenizer import get_tokenizer
 from data.tasks import default_sft_mixture, default_sft_validation
 from inference.engine import render_chat_prompt
 from optim.muon import setup_optimizer
+from common.config import default_tag
 
 
 def parse_args():
     p = argparse.ArgumentParser(description="SFT")
-    p.add_argument("--mode", default="smoke", choices=["debug", "smoke", "full"])
-    p.add_argument("--base-tag", default=None, help="基座模型 tag（默认 d4/d6）")
+    p.add_argument("--mode", default="smoke",
+                   choices=["debug", "smoke", "ablation", "full"])
+    p.add_argument("--base-tag", default=None, help="基座模型 tag（默认取档位预设）")
     p.add_argument("--num-iterations", type=int, default=None)
     p.add_argument("--device-batch-size", type=int, default=None)
     p.add_argument("--mmlu-epochs", type=int, default=3)
@@ -140,7 +142,7 @@ def main():
     pad_id = tokenizer.get_bos_token_id()
 
     # ---- 1) 载入基座 ----
-    base_tag = args.base_tag or {"debug": "d2", "smoke": "d4", "full": "d6"}[args.mode]
+    base_tag = args.base_tag or default_tag(args.mode)
     log0(f"载入基座模型 {base_tag} ...")
     model, tok, base_meta = load_latest(get_runs_dir(), base_tag, device)
     mcfg = model.config

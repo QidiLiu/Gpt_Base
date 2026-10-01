@@ -24,6 +24,8 @@ from common.utils import (  # noqa: F401
     get_dist_info,
     synchronize,
     get_max_memory,
+    # 注意力后端探针
+    flash_backend_report,
     # 日志
     logger,
     log0,

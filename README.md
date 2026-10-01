@@ -43,7 +43,27 @@ bash script/eval_sft.sh   smoke   # 多选准确率 + GSM8K pass@1 + 多轮展�
 bash script/chat.sh       smoke   # 交互式聊天
 ```
 
-档位：`debug`（秒级）/ `smoke`（2-3 分钟）/ `full`（20-25 分钟）。
+### 四档规模
+
+| 档位 | 模型 | 步数 | 耗时（RTX 4060 Ti） | 用途 |
+|---|---|---|---|---|
+| `debug` | d2, 32 维, 1 头 | 20 | **秒级** | 单步调试 |
+| `smoke` | d4, 128 维, 4 头 | 896 | **2-3 分钟** | 跑通全流程，每章验证用 |
+| `ablation` | d6, 384 维, 6 头 | 3096 | **约 1 小时** | **消融实验专用**（基线保持中性） |
+| `full` | d24, 768 维, 12 头 | 2088 | **约 128 小时** | 消融后的最佳组合，只训一次 |
+
+`ablation` 和 `full` 回答的是**不同问题**，所以超参数取法正好相反：
+
+- **`ablation`（d6）**回答「某个 trick 值多少钱」。基线必须保持中性 ——
+  Muon `simple` + 5 个 trick 全关。一旦基线本身开了 trick，测出来的是
+  「A 相对 A+B」，单项贡献就被稀释了。
+- **`full`（d24）**回答「最终模型能有多好」。所以它开满 nanochat 的生产
+  配置：5 个残差流 trick 全开 + Muon `advanced`，只训一次，不做对照。
+
+> **两个反直觉的实测结论**（省时间前值得知道）：
+> 5 个 trick 只让耗时 +10%，但让显存 +1.9 GiB（`value_embeds` 单独 +151M
+> 参数）；真正的开销是 **Muon `advanced`（+62%）**。想省时间就改
+> `muon_flavor="simple"`（128h → 67h），不要动 trick 开关。
 
 ## 项目结构
 
@@ -59,7 +79,7 @@ src/
 script/           6 个入口脚本（train_base / eval_base / train_sft / eval_sft / chat / progress）
 doc/tutorial/     教程（7 章已写：卷0 准备 + 卷1 数据；卷 2-8 待补）
 scratch/          12 个实验脚本
-tests/            182 个测试，每章的完成判据（另加 10 个判据自检，共 192）
+tests/            190 个测试，每章的完成判据（另加 10 个判据自检，共 200）
 ```
 
 ## 看答案

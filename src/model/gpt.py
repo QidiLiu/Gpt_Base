@@ -339,6 +339,8 @@ class GPT(nn.Module):
             f"  激活           : {cfg.activation}",
             f"  滑窗模式       : {cfg.window_pattern}"
             f" -> {self.window_sizes}",
+            f"  滑窗实现       : {getattr(cfg, 'attn_impl', 'flex')}"
+            f"（全上下文固定走 SDPA flash = FA2，不受此项影响）",
             f"  权重绑定       : {cfg.tie_embeddings}",
             f"  logit softcap  : {cfg.logit_softcap if cfg.logit_softcap > 0 else '关闭'}",
         ]

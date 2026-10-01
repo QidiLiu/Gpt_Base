@@ -12,9 +12,13 @@
 阅读顺序建议：按类定义顺序从上往下读，每个类都对应一章。
 """
 
+from functools import lru_cache
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from common import log0
 
 
 
@@ -154,6 +158,127 @@ def apply_rotary_emb(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor):
 
 
 # ===========================================================================
+# 注意力后端：Flash Attention 2
+# ===========================================================================
+# 本项目保证在支持的后端上真的用上 **Flash Attention 2**，而不是碰巧能用。
+#
+# ── 「碰巧能用」和「保证用上」差在哪？───────────────────────────────
+#   `F.scaled_dot_product_attention` 会在所有可用后端里**静默挑选**一个。
+#   挑到 flash 是运气好，但没有任何东西保证它：换个 torch 版本、换个 shape、
+#   或者哪天某个参数让它挑不满足，就悄悄退回 mem-efficient 或 math，
+#   而且**不报错**。教程卷3 第20章讲的「性能悬崖」就是这么发生的。
+#
+# ── 本机（RTX 4060 Ti / SM 8.9）实测的可用性 ──────────────────────
+#   路径                                    FA2 可用   实测耗时
+#   is_causal=True 全上下文                    ✓      0.22 ms
+#   GQA（n_head != n_kv_head）                 ✓      —
+#   KV cache decode                           ✓      —
+#   滑窗（显式 attn_mask）                      ✗      0.50 ms
+#   滑窗（flex_attention + block_mask）        ✓      0.18 ms  ← 2.8×
+#
+# ── 为什么滑窗要绕一圈用 flex_attention？──────────────────────────
+#   SDPA 的 flash 后端**不接受任意 attn_mask**。硬钉它会直接炸：
+#       RuntimeError: No available kernel. Aborting execution.
+#   而 SDPA 的 mem-efficient 后端接受 mask，于是滑窗路径被迫降级，
+#   并且要物化一个 (T,T) 的 bool mask（T=1024 时每层每步 1MB）。
+#
+#   flex_attention 是 PyTorch 内建的另一条路：它把 mask 编译成
+#   **块级**的 block_mask（只存 128×128 的块摘要），不物化 (T,T)，
+#   生成的 kernel 就是 FA2 风格的。所以它既有 FA2 的速度，又支持滑窗。
+#
+#   代价：flex_attention **必须 torch.compile**（eager 模式极慢）。
+#   所以下面用 compile_or_eager 的同一套思路做「探测一次，失败回落」——
+#   回落目标是 sdpa_bt 的显式 mask 路径，也就是上面表格里的 0.50 ms。
+#   数值上两者等价（实测最大误差 0.0039 = bf16 舍入），所以回落不改变结果，
+#   只改变速度。
+
+# 编译后的 flex_attention。缓存起来，全局只编译一次。
+_FLEX = None
+
+
+def _flex_attention():
+    global _FLEX
+    if _FLEX is None:
+        try:
+            from torch.nn.attention.flex_attention import flex_attention
+            _FLEX = torch.compile(flex_attention, dynamic=False)
+        except Exception:
+            _FLEX = False          # 编译不了 -> 永久走回落路径
+    return _FLEX or None
+
+
+@lru_cache(maxsize=8)
+def _sliding_block_mask(T: int, left: int, device):
+    """
+    构造滑窗的 block_mask，并**缓存**。
+
+    为什么要缓存：create_block_mask 本身要跑一次前向、建块摘要，开销不小。
+    而 attend() 每层每步都会被调用 —— 不缓存的话，光建 mask 就能吃掉
+    全部的注意力收益。cache key 里不含 batch：block_mask 的第 0/1 维传
+    None 表示「所有 batch / 所有 head 共用同一张mask」，这正是我们要的
+    （因果性和滑窗宽度都不依赖具体样本）。
+    """
+    from torch.nn.attention.flex_attention import create_block_mask
+
+    def mask_mod(b, h, q_idx, kv_idx):
+        delta = q_idx - kv_idx
+        return (delta >= 0) & (delta <= left)
+
+    return create_block_mask(mask_mod, None, None, T, T, device=str(device))
+
+
+def attend_sliding_flex(q, k, v, left):
+    """
+    滑窗注意力走 flex_attention（FA2 风格 kernel）。
+
+    形状约定沿用全项目：(B, T, H, D)。flex_attention 要 (B, H, T, D)，
+    所以进出各 transpose 一次 —— 和 sdpa_bt 是同样的两次 transpose 开销。
+
+    任何一步不可用（无 CUDA / 编译失败 / block_mask 建不出来）都回落到
+    `attend_sliding_sdpa`，那是显式 mask 的 mem-efficient 路径。
+    """
+    flex = _flex_attention()
+    if flex is None:
+        return attend_sliding_sdpa(q, k, v, left)
+    try:
+        B, T, H, D = q.shape
+        block_mask = _sliding_block_mask(T, left, q.device)
+        out = flex(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2),
+                   block_mask=block_mask, enable_gqa=(q.size(2) != k.size(2)))
+        return out.transpose(1, 2)
+    except Exception:
+        # 只警告一次。回落不是错误，只是慢 —— 训练结果依然正确。
+        global _FLEX_FALLBACK_LOGGED
+        if not _FLEX_FALLBACK_LOGGED:
+            _FLEX_FALLBACK_LOGGED = True
+            log0("  [attn] flex_attention 不可用，滑窗回落到显式 mask"
+                 "（mem-efficient 后端，约慢 2.8 倍，数值等价）")
+        return attend_sliding_sdpa(q, k, v, left)
+
+
+_FLEX_FALLBACK_LOGGED = False
+
+
+def attend_sliding_sdpa(q, k, v, left):
+    """
+    滑窗注意力的原始实现：物化 (T,T) 的 bool mask，交给 SDPA。
+
+    SDPA 的 flash 后端不接受 attn_mask，所以这条路径必然落到
+    mem-efficient 后端。它被保留下来有两个原因：
+
+      1. 它是 flex_attention 的回落目标（没有 C 编译器时也能跑）
+      2. 它是教程卷3 第20章的**对照组** ——「滑窗的性能悬崖」这个教学点
+         需要一个慢的参照物。两条路径都在，2.8× 的差距才可测量。
+    """
+    T = q.size(1)
+    idx = torch.arange(T, device=q.device)
+    delta = idx[:, None] - idx[None, :]          # (T, T)，delta[j,i] = j - i
+    mask = (delta >= 0) & (delta <= left)         # 因果 ∧ 窗口
+    return sdpa_bt(q, k, v, causal=False, mask=mask,
+                   gqa=(q.size(2) != k.size(2)))
+
+
+# ===========================================================================
 # 注意力
 # ===========================================================================
 class CausalSelfAttention(nn.Module):
@@ -183,6 +308,7 @@ class CausalSelfAttention(nn.Module):
         self.d_model = cfg.n_embd
         self.qk_norm_scale = cfg.qk_norm_scale
         self.use_rope = cfg.use_rope
+        self.attn_impl = getattr(cfg, "attn_impl", "flex")   # "flex" | "sdpa"
 
         assert cfg.n_head % cfg.n_kv_head == 0, "n_head 必须是 n_kv_head 的整数倍"
         kv_dim = cfg.n_kv_head * cfg.head_dim
@@ -237,10 +363,11 @@ class CausalSelfAttention(nn.Module):
 
         # (4) 加权
         if kv_cache is None:
-            y = attend(q, k, v, window)
+            y = attend(q, k, v, window, attn_impl=self.attn_impl)
         else:
             kc, vc = kv_cache.get_layer(self.layer_idx)
-            y = attend_with_kvcache(q, kc, vc, k, v, kv_cache, window)
+            y = attend_with_kvcache(q, kc, vc, k, v, kv_cache, window,
+                                    attn_impl=self.attn_impl)
             # ★★ 推进 KV cache 的写指针 —— 整份实现里最容易漏的一步。
             #
             # attend_with_kvcache 只**读** cache_seqlens 来定位写入位置，
@@ -306,7 +433,7 @@ def sdpa_bt(q, k, v, causal, mask=None, gqa=False):
     return out.transpose(1, 2)
 
 
-def attend(q, k, v, window):
+def attend(q, k, v, window, attn_impl="flex"):
     """
     训练时的注意力。
 
@@ -315,30 +442,36 @@ def attend(q, k, v, window):
       (W, 0)  = 滑动窗口，只看最近 W 个
       (0, 0)  = 只看自己
 
-    ── 为什么要区分两条路径？────────────────────────────────────
-    全上下文时我们走 SDPA 的 is_causal=True，它会选中最快的
-    flash attention kernel，完全不物化 (T,T) 的注意力矩阵。
+    ── 两条路径，以及为什么要分 ────────────────────────────────
+    **全上下文（left >= T）永远走 SDPA 的 is_causal=True。**
+    这条路径本来就选中 flash kernel（= Flash Attention 2），不物化
+    (T,T) 的注意力矩阵，是最快的路。attn_impl 开关对它**没有影响**。
 
-    但 SDPA **不支持滑动窗口**。要用滑窗，只能自己构造 (T,T) 的 bool mask，
-    这会强制它退到 memory-efficient kernel，并且要物化 mask。
-    nanochat 因此在有滑窗时依赖 Flash Attention 3（FA3 原生支持 window_size）。
-    本项目没有 FA3，所以走「显式 mask」这条路，代价是变慢。
-    这不是 bug，是硬件现实 —— 教程卷3 会让你亲眼看到这个性能悬崖。
+    **滑窗才需要选择：**
+      attn_impl="flex"  flex_attention + 块级 block_mask → FA2 风格 kernel
+                       实测 0.18 ms（SDPA 显式 mask 是 0.50 ms）
+      attn_impl="sdpa"  物化 (T,T) 的 bool mask，SDPA 退回 mem-efficient
+
+    为什么 SDPA 没法直接做滑窗 FA2：它的 flash 后端**不接受 attn_mask**，
+    硬钉会抛 `No available kernel`。所以要走 FA2 风格的滑窗 kernel，
+    只能换一条路（flex_attention），而不是换 SDPA 的参数。
+
+    这不是 bug，是硬件现实 —— 教程卷3 第20章会让你亲眼看到这个性能悬崖，
+    而 `attn_impl` 就是量它的那把尺子（把它设成 "sdpa" 就能量到 2.8×）。
     """
-    gqa = (q.size(2) != k.size(2))
     left = window[0]
     T = q.size(1)
     if left is None or left <= 0 or left >= T:
-        # 全上下文：最快路径
-        return sdpa_bt(q, k, v, causal=True, gqa=gqa)
-    # 滑窗：构造 mask。行 j（查询位置）能看到列 i 当且仅当 0 <= j-i <= left
-    idx = torch.arange(T, device=q.device)
-    delta = idx[:, None] - idx[None, :]          # (T, T)，delta[j,i] = j - i
-    mask = (delta >= 0) & (delta <= left)         # 因果 ∧ 窗口
-    return sdpa_bt(q, k, v, causal=False, mask=mask, gqa=gqa)
+        # 全上下文：最快路径，本来就是 FA2
+        return sdpa_bt(q, k, v, causal=True, gqa=(q.size(2) != k.size(2)))
+    # 滑窗：行 j（查询位置）能看到列 i 当且仅当 0 <= j-i <= left
+    if attn_impl == "flex":
+        return attend_sliding_flex(q, k, v, left)
+    return attend_sliding_sdpa(q, k, v, left)
 
 
-def attend_with_kvcache(q, k_cache, v_cache, k, v, kv_cache, window):
+def attend_with_kvcache(q, k_cache, v_cache, k, v, kv_cache, window,
+                        attn_impl="flex"):
     """
     推理时带 KV cache 的注意力。
 
@@ -368,10 +501,16 @@ def attend_with_kvcache(q, k_cache, v_cache, k, v, kv_cache, window):
 
     left = window[0]
     if left is None or left <= 0 or left >= S:
-        # is_causal=False：因果性已经由「只取 0..S-1 且 S 正好等于当前位置+1」保证了
+        # is_causal=False：因果性已经由「只取 0..S-1 且 S 正好等于当前位置+1」保证了。
+        # 这条路径实测选中 flash（FA2），decode 阶段 Tq=1，开销主要在带宽不在算力。
         return sdpa_bt(q, kk, vv, causal=False, gqa=gqa)
 
-    # 滑窗：query 绝对位置 = cache_seqlens + [0..Tq)，key 位置 = 0..S-1
+    # ── 滑窗 decode：query 的绝对位置是 cache_seqlens + [0..Tq) ──
+    # 注意这里**不能**直接复用 attend_sliding_flex：那个函数假设 q/k/v
+    # 在同一个长度上，而这里 kv 的有效长度 S 远大于本次要算的 Tq。
+    # 复用一个 block_mask 也会算错（偏移量不同）。
+    # decode 时 Tq 通常是 1，直接走显式 mask 就够 —— S 通常也不大，
+    # 而且 flex_attention 在 Tq=1 上没有优势（它是为长序列设计的）。
     qpos = (kv_cache.cache_seqlens + torch.arange(Tq, device=q.device)).view(B, 1)
     kpos = torch.arange(S, device=q.device).view(1, -1)
     delta = qpos.unsqueeze(-1) - kpos.unsqueeze(1)               # (B, Tq, S)

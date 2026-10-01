@@ -9,7 +9,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 MODE="${1:-smoke}"; [ $# -gt 0 ] && shift || true
 
-[ -f "runs/sft_checkpoints/$TAG/model_"*.pt ] 2>/dev/null \
+# compgen 而非 `[ -f glob ]`：后者在有 2+ 个 checkpoint 时会误判为「找不到」
+compgen -G "runs/sft_checkpoints/$TAG/model_*.pt" > /dev/null \
   || die "没有找到 SFT 模型 $TAG。先跑：bash script/train_sft.sh $MODE"
 
 say "评测 SFT 模型 $TAG"

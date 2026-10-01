@@ -43,6 +43,65 @@ def test_presets_are_self_consistent():
         assert cfg.train.device_batch_size > 0, f"{mode} 档 device_batch_size 必须为正"
 
 
+def test_full_preset_batch_size_is_self_consistent():
+    """
+    full 档的 device_batch_size / total_batch_size 必须自洽且有余量。
+
+    ── 为什么要单独测这条 ────────────────────────────────────
+    `resolve_scaling` 里有一条 assert：
+        total_batch % (device_batch_size × sequence_len) == 0
+    它**只在真正训练时**才触发（要等 resolve_scaling 被调用）。
+    但这个约束有个陷阱：dbs=12 时 tokens_per_micro = 12288 = 2^12 × 3，
+    **任何 2 的幂都不满足**。也就是说照着「batch 取 2 的幂」的直觉写
+    total_batch_size，一定会在 resolve_scaling 当场 assert 失败。
+    （这正是 full 档最初写成 total_batch=2^20 时会踩的坑。）
+
+    所以 preset 的两个数必须一起改，而它们分处同一行配置里 ——
+    正是那种「改了一个忘了另一个」的高危写法。
+
+    另外顺带守住「默认 dbs 不能把显存吃满」：dbs=16 会溢写 host 内存
+    （实测峰值 18.77 GiB > 物理 16.00 GiB，tok/s 从 7,766 崩到 780），
+    那种配置即使能跑起来也没有意义。
+    """
+    cfg = make_run_config("full", vocab_size=16384)
+    m = cfg.model
+    tpm = cfg.train.device_batch_size * m.sequence_len
+    assert cfg.train.total_batch_size % tpm == 0, (
+        f"device_batch_size={cfg.train.device_batch_size} × "
+        f"sequence_len={m.sequence_len} = {tpm}，"
+        f"total_batch_size={cfg.train.total_batch_size} 整除不了它。"
+        f"注意 tokens_per_micro 含因子 3 时，2 的幂都不满足。"
+    )
+    accum = cfg.train.total_batch_size // tpm
+    assert 1 <= accum <= 512, f"grad_accum={accum} 不在合理区间"
+
+    # 显存余量：以下是**多步稳态**实测的峰值 reserved，不是单步。
+    #
+    # ⚠ 这张表是踩过坑才建起来的，务必当文档看：
+    #   单步测量给出的 dbs=12 是 15.01 GiB（94%），看着完全可用。
+    #   但连跑真实训练循环时它在**第 2 步**就抛
+    #   `CUDA driver error: device not ready`（不是 OOM！驱动在显存分配
+    #   边界上崩掉且无法恢复）。独立进程重试 3 次，每次都复现。
+    #   dbs=16 则是 18.77 GiB 直接超物理显存，tok/s 崩到 780。
+    #
+    #   所以阈值卡在 13 GiB 而不是 15.5：dbs=12 的单步数字正好落在
+    #   「单步看着没事、多步必崩」的区间里。宁可保守。
+    peak_reserved = {
+        2: 4.83, 4: 8.67, 8: 12.45, 12: 14.68, 16: 18.77,
+    }[cfg.train.device_batch_size]
+    assert peak_reserved < 13.0, (
+        f"默认 device_batch_size={cfg.train.device_batch_size} 的多步实测峰值 "
+        f"{peak_reserved} GiB 超过 13 GiB 安全线。"
+        f"dbs=12 的教训：单步 15.01 GiB 看着能用，但第 2 步就 "
+        f"`CUDA driver error: device not ready`（非 OOM）。"
+        f"默认档必须留出余量给 SFT 和后续实验。"
+    )
+    assert peak_reserved <= 0.60 * 16.0, (
+        f"默认 device_batch_size={cfg.train.device_batch_size} 占了 "
+        f"{100 * peak_reserved / 16:.0f}% 显存，余量不足。"
+    )
+
+
 def test_preset_tag_matches_depth():
     """
     tag 必须是 `d{depth}` —— tag 就是存档目录名，depth 是唯一旋钮。

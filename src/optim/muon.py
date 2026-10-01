@@ -156,8 +156,8 @@ def muon_step(stacked_grad, stacked_param, momentum_buf, second_moment_buf,
     #   dynamo 眼里的 "Data-dependent branching"，而 compile_or_eager 用的是
     #   `fullgraph=True` —— 遇到这种分支直接拒绝编译，于是整个 muon_step
     #   静默回落到 eager。实测代价（d24 / trick 全开）：
-    #       带这个判断   862 ms/micro  →  full 档 128 小时
-    #       去掉这个判断 710 ms/micro  →  full 档 105 小时
+    #       带这个判断   862 ms/micro  →  full 档 55.3 小时
+    #       去掉这个判断 710 ms/micro  →  full 档 45.4 小时
     #   而且它**不报错**，只在日志里留一行「回落到 eager」，非常容易漏看。
     #
     #   去掉是否安全？wd == 0 时 mask 那一项是 0*param*mask == 0，

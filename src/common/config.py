@@ -246,22 +246,40 @@ class RunConfig:
 #       所以它开满 nanochat 的生产配置：5 个残差流 trick 全开 + Muon advanced。
 #       只训一次，不做对照，所以不需要中性。
 #
-# ── full 档的实测数字（RTX 4060 Ti 16GB / d24 / seq1024 / dbs=4）────
+# ── full 档的实测数字（RTX 4060 Ti 16GB / d24 / seq1024）────────────
 #   参数量       195M（trick 全关）→ 346M（全开，value_embeds 单独 +151M）
-#   峰值显存     5.53 GiB（全关）→ 7.46 GiB（全开）
-#   吞吐         10,015 tok/s（全关+simple）→ 4,754 tok/s（全开+advanced）
-#   总耗时       61 h（全关+simple）→ 67 h（全开+simple）→ 128 h（全开+advanced）
+#   MFU          23.7%（fwd+bwd，不含优化器）
 #
-#   注意两个反直觉的结论：
-#     · 5 个 trick 只让耗时 +10%，但让显存 +1.9 GiB（value_embeds 是 12 张
-#       16384×768 的查表，走 AdamW，各存 fp32 参数+梯度+两个矩）。
-#     · 真正的开销是 **Muon advanced（+62%）**，不是 trick。
-#       想省时间就改 muon_flavor="simple"，不要动 trick 开关。
+#   ★★ device_batch_size 的实测阶梯 ★★
+#   **必须多步测量**。单步测量会严重低估稳态显存需求：优化器状态、
+#   梯度累积的中间张量、cudnn workspace 都在第 2 步才达到峰值。
+#   下面是连跑 3-4 个完整 step 的结果（每档都是真实训练循环，
+#   包含 grad_accum 次 micro-step + 一次 opt.step）：
 #
-#   device_batch_size 的实测（trick 全开 + advanced）：
-#     dbs=4 → 7.46 GiB 峰值，grad_accum=256
-#     dbs=8 → 见 doc/tutorial/01 的显存表，仍在 16GB 以内且吞吐更高
-#     dbs=16 → 会 OOM（本卡 16 GiB）
+#     dbs   accum  峰值reserved  tok/s   MFU    总耗时   稳定性
+#       2     512      4.83 GiB  13,220  21.1%   46.2 h   ✅
+#       4     256      8.67 GiB  14,841  23.7%   41.0 h   ✅ ← 默认
+#       8     126     12.45 GiB  14,770  23.6%   41.2 h   ✅
+#      12      85     14.68 GiB  13,898    —       —      ❌ 第 2 步 CUDA driver error
+#      16      —      18.77 GiB      780    —       —      ❌ 超物理显存，溢写 host
+#
+#   **两个反直觉的结论**：
+#
+#   (1) dbs 从 4 加到 8，吞吐几乎不变（14,841 → 14,770，甚至略降）。
+#       也就是说 **GPU 在 dbs=4 时已经吃饱了**，再加大 batch 不再有任何收益 ——
+#       MFU 稳定在 23.7% 是这张卡的真实上限，不是 batch 不够大。
+#       单步测量曾得出「dbs=8 快 1.44×」的结论，那是错的：那次把
+#       opt.step() 的耗时摊到了单步上，掩盖了真实瓶颈在 fwd/bwd。
+#
+#   (2) dbs=12 会崩，而且**不是 OOM**。它在第 1 步跑完（14.68 GiB），
+#       第 2 步抛 `CUDA driver error: device not ready` —— 驱动在显存
+#       分配上撞到边界后无法恢复。单步测量时它看着能用（94% 占用），
+#       正是最危险的「看着没事」状态。独立进程重试 3 次，每次都复现。
+#
+#   所以默认取 dbs=4：吞吐与 8 持平，却只用 8.67 / 16 GiB（54%），
+#   剩下的 7 GiB 留给 SFT、eval_sft、以及更大的消融实验。
+#   ⚠ 改 device_batch_size 时必须同时改 total_batch_size（见下方注释）。
+
 PRESETS = {
     "debug": dict(
         tag="d2", depth=2,
@@ -294,12 +312,17 @@ PRESETS = {
     "full": dict(
         tag="d24", depth=24,
         aspect_ratio=32, head_dim=64, sequence_len=1024, vocab_size=16384,
-        # total_batch_size 显式钉死，不留 -1：preset 应该是可复现的快照，
-        # 而不是 resolve_scaling 公式的输出。1048576 来自推导
+        # total_batch_size 来自推导
         #   B_ref × (target_tokens / D_ref)^0.383 = 2^19 × (2.19B/330M)^0.383
-        # 并向上取整到 2 的幂。必须被 device_batch_size×sequence_len 整除：
-        #   1048576 / (4 × 1024) = 256 ✓（grad_accum=256）
+        # 并向上取整到 2 的幂。必须被 device_batch_size×sequence_len 整除。
+        # total_batch_size 显式钉死，不留 -1：preset 应该是可复现的快照，
+        # 而不是 resolve_scaling 公式的输出。
         device_batch_size=4, total_batch_size=1048576,
+        # ⚠ 改 device_batch_size 时必须同时改 total_batch_size ——
+        #   resolve_scaling 会 assert 整除性（total_batch % (dbs × T) == 0）。
+        #   dbs=4 -> tokens_per_micro = 4096 = 2^12，2^20 正好整除（accum=256）。
+        #   注意 dbs=12 时 tokens_per_micro = 12288 = 2^12 × 3，
+        #   **任何 2 的幂都不满足** —— 那时 total_batch 只能是 12288 的倍数。
         target_param_data_ratio=12.0,   # → 2,189,426,688 tokens / 2088 步
         num_iterations=-1,
         eval_every=200, sample_every=400, log_every=50,

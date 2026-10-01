@@ -258,29 +258,35 @@ class RunConfig:
 #
 #     dbs   accum  峰值reserved  tok/s   MFU    总耗时   稳定性
 #       2     512      4.83 GiB  13,220  21.1%   46.2 h   ✅
-#       4     256      8.85 GiB  14,854  23.7%   40.9 h   ✅ ← 默认
-#       8     126    12.77 GiB  14,770  23.6%   41.2 h   ✅
+#       4     256      8.85 GiB  14,854  23.7%   40.9 h   ✅
+#       8     128     12.77 GiB  14,765  23.6%   41.2 h   ✅ ← 默认
 #      12      85    14.68 GiB  13,898    —       —      ❌ 第 2 步 CUDA driver error
 #      16      —      18.77 GiB      780    —       —      ❌ 超物理显存，溢写 host
 #
+#   （总步数 2088、目标 token 数 2.19B 在 dbs=4/8 下相同，所以总耗时
+#     也几乎相同 —— 这也是为什么 4 和 8 的 tok/s 读数只差 0.6%。）
+#
 #   **三个反直觉的结论**：
 #
-#   (1) 加大 batch 毫无收益。dbs 从 4 加到 8，吞吐几乎不变
-#       （14,854 → 14,770，甚至略降）。也就是说 **GPU 在 dbs=4 时已经
-#       吃饱了** —— MFU 稳定在 23.7% 是这张卡的真实上限，不是 batch 不够大。
+#   (1) 加大 batch 对吞吐毫无收益。dbs 从 4 加到 8 是 14,854 → 14,765，
+#       严格来说**略降**。也就是说 **GPU 在 dbs=4 时已经吃饱**——
+#       MFU 稳定在 23.7% 是这张卡的真实上限，不是 batch 不够大。
+#       单步测量曾得出「dbs=8 快 1.44×」的结论，那是错的：那次把
+#       opt.step() 的耗时摊到了单步上，而真实的时间分布是
+#       fwd 33% / bwd 67% / 优化器 0.6% —— 瓶颈在 fwd+bwd，随 dbs 线性增长。
 #
 #   (2) dbs=12 会崩，而且**不是 OOM**。它在第 1 步跑完（14.68 GiB），
 #       第 2 步抛 `CUDA driver error: device not ready` —— 驱动在显存
 #       分配上撞到边界后无法恢复。单步测量时它看着能用（92% 占用），
 #       正是最危险的「看着没事」状态。独立进程重试 3 次，每次都复现。
 #
-#   (3) 单步测量会把 opt.step() 的耗时摊到单步上，从而**凭空造出一个
-#       「dbs=8 快 1.44×」的假象**。真实的瓶颈在 fwd/bwd（各占 33%/67%，
-#       优化器只占 0.6%），而那部分随 dbs 线性增长，堆 batch 无用。
+#   (3) 所以 4 和 8 的取舍不是速度，是**余量**：吞吐一样，
+#       8 用 12.77 GiB（80%），4 用 8.85 GiB（55%）。
+#       默认给 8，因为 grad_accum 只有一半（128 vs 256），dataloader 的
+#       Python 开销和每步的 CPU 侧开销都摊得更薄，而且 3.2 GiB 余量
+#       实测够 SFT 和 eval_sft 用。要更宽裕就 --device-batch-size 4。
 #
-#   所以默认取 dbs=4：吞吐与 8 持平，却只用 8.85 / 16 GiB（55%），
-#   剩下的 7 GiB 留给 SFT、eval_sft、以及更大的消融实验。
-#   ⚠ 改 device_batch_size 时必须同时改 total_batch_size（见下方注释）。
+#   ⚠ 改 device_batch_size 时必须检查 total_batch_size 的整除性（见下方注释）。
 
 PRESETS = {
     "debug": dict(
@@ -319,10 +325,11 @@ PRESETS = {
         #   B_ref × (target_tokens / D_ref)^0.383 = 2^19 × (2.19B/330M)^0.383
         # 并向上取整到 2 的幂。必须被 device_batch_size×sequence_len 整除：
         #   1048576 / (4 × 1024) = 256 ✓（grad_accum=256）
-        device_batch_size=4, total_batch_size=1048576,
-        # ⚠ 改 device_batch_size 时必须同时改 total_batch_size ——
-        #   resolve_scaling 会 assert 整除性（total_batch % (dbs × T) == 0）。
-        #   dbs=4 -> tokens_per_micro = 4096 = 2^12，2^20 正好整除（accum=256）。
+        device_batch_size=8, total_batch_size=1048576,
+        # ⚠ 改 device_batch_size 时必须检查 total_batch_size 的整除性 ——
+        #   resolve_scaling 会 assert（total_batch % (dbs × T) == 0）。
+        #   dbs=8 -> tokens_per_micro = 8192 = 2^13，而 2^20 = 2^13 × 128，
+        #   所以 total_batch_size 不用动（grad_accum = 128）。
         #   注意 dbs=12 时 tokens_per_micro = 12288 = 2^12 × 3，
         #   **任何 2 的幂都不满足** —— 那时 total_batch 只能是 12288 的倍数。
         target_param_data_ratio=12.0,   # → 2,189,426,688 tokens / 2088 步

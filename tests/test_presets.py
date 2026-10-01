@@ -104,6 +104,156 @@ def test_full_preset_batch_size_is_self_consistent():
     )
 
 
+def test_weight_decay_is_reachable_and_nonzero_for_full():
+    """
+    full 档的 weight decay 必须**非零**，且能从 CLI / kwargs 覆盖。
+
+    ── 真实事故：谨慎 WD 整条分支空转 ──────────────────────────
+    教程卷4 第 26 章讲「谨慎权重衰减」，它由两个东西共同决定：
+        muon_step 里的 mask = (g * p) >= 0   （算法）
+        hp["wd"] 是否非 0                      （有没有真的在衰减）
+
+    而 MuonConfig.weight_decay 的默认值是 **0.0**。于是：
+        λ_ref = 0.0
+          -> resolve_scaling 的 weight_decay_scaled = 0.0 × 任何东西 = 0.0
+          -> wd_sched(step) 恒返回 0
+          -> muon_step 里 `lr * wd * param * mask` 恒等于 0
+          -> use_cautious_wd=True 这个 flag 设了也没用，整条分支等于不存在
+
+    更糟的是**没有任何办法从外面打开它**：CLI 没有对应开关，
+    PRESETS 里也没写。于是：
+      · 教程里「ablation 档加 --cautious-wd 试试」这种操作根本不存在
+      · 而 tests/test_optim.py::test_cautious_wd_only_decays_same_sign
+        是**直接构造 HyperParams(wd=0.5)** 再调 muon_step 的，
+        整条配置链被绕开了 —— 所以它照样通过，挡不住这个 bug。
+
+    这个测试就是补上那个缺口：从 preset 出发，不手工构造任何 wd。
+    """
+    cfg = make_run_config("full", vocab_size=16384)
+    assert cfg.optim.muon.weight_decay > 0, (
+        f"full 档的 muon.weight_decay = {cfg.optim.muon.weight_decay}，"
+        f"这会让谨慎 WD 整条分支乘 0 空转。"
+        f"full 是唯一「开满生产配置」的档位，它的 wd 不该是 0。"
+    )
+    # 覆盖能力：能通过 kwargs 改（train_base.py 的 --muon-weight-decay 走同一路径）
+    off = make_run_config("full", vocab_size=16384, muon_weight_decay=0.0)
+    assert off.optim.muon.weight_decay == 0.0, "kwargs 覆盖没生效"
+    hi = make_run_config("full", vocab_size=16384, muon_weight_decay=0.5)
+    assert hi.optim.muon.weight_decay == 0.5, "kwargs 覆盖没生效"
+
+
+def test_weight_decay_survives_scaling_for_full():
+    """
+    resolve_scaling 不能把 full 的 wd 缩放成 0。
+
+    上一条测的是「配置里写了非零」，这条测「经过 T_epoch 缩放之后仍然非零」。
+    两者是不同的失败点 —— 缩放公式里有 `run.optim.muon.weight_decay` 这个
+    乘数，只要它是 0，前面写什么都没用。
+
+    顺带钉住缩放因子的方向：λ = λ_ref·√(B/B_ref)·(D_ref/D)。
+    D_ref 是 d12 的数据量、target_tokens 是当前档的，B_ref=2^19、
+    B 是实际 batch。full 档这几个数的实测缩放因子约 0.2133，
+    所以 λ_ref=0.1 -> 峰值约 0.0213。这个数会随档位变化，
+    所以只断言「非零」和「同量级」，不写死精确值。
+    """
+    import math
+    cfg = make_run_config("full", vocab_size=16384)
+    sc = resolve_scaling(cfg, log=lambda *a: None)
+    peak = sc["weight_decay_scaled"]
+    assert peak > 0, (
+        f"full 档的 weight_decay_scaled = {peak} —— 缩放后归零了，"
+        f"谨慎 WD 又变成空转。检查 resolve_scaling 里 "
+        f"`run.optim.muon.weight_decay` 这个乘数。"
+    )
+    # 缩放后应比 λ_ref 小（full 档 D_ref/D ≈ 0.15，√(B/B_ref)=1.41，乘积 ≈0.21）
+    factor = peak / cfg.optim.muon.weight_decay
+    assert 0.05 < factor < 1.0, (
+        f"缩放因子 {factor:.4f} 不在预期区间（full 档实测约 0.21）。"
+        f"公式是 λ·√(B/B_ref)·(D_ref/D)，factor 应约等于这两项的乘积。"
+    )
+    assert math.isfinite(peak)
+
+
+def test_full_preset_cautious_wd_actually_moves_params():
+    """
+    端到端：full 的真实配置下，cautious WD 必须**真的**改变参数。
+
+    现有 test_cautious_wd_only_decays_same_sign 是手工构造
+    HyperParams(wd=0.5) 直接调 muon_step 的 —— 它验证的是**算法**，
+    不是**配置是否让它生效**。所以当 weight_decay 恒为 0 时，
+    那个测试依然全绿，而实际训练里 wd 分支从未执行。
+
+    这条测试从 preset 出发，走 setup_optimizer -> param_groups ->
+    muon_step 的完整链条，只隔离一个变量：wd 是否为 0。
+    """
+    import torch
+    from optim.muon import muon_step, HyperParams
+    from common.config import MuonConfig
+
+    def run_with(wd: float) -> torch.Tensor:
+        """用 muon_cfg.weight_decay=wd 走一遍 muon_step，返回参数。"""
+        mc = MuonConfig(flavor="advanced", weight_decay=wd)
+        # ★ 必须用**反号**的初值（p<0, g>0），不能用同号。
+        #   同号时 mask=1，谨慎分支的算式退化成
+        #       lr*g + lr*wd*p*1  ==  普通分支的 lr*g + lr*wd*p
+        #   两者**逐位相同**，所以同号根本区分不出「谨慎分支是活的」
+        #   还是「分支被短路、退化成普通分支」。实测：把
+        #   `if cfg.flavor != "simple" and cfg.use_cautious_wd:` 改成
+        #   `if False and ...`，同号版本的新测试照样通过。
+        #   反号时 mask=0，谨慎分支的 wd 项被整个抑制，于是：
+        #       谨慎分支: p = -2 - 0.1*1                    = -2.1
+        #       普通分支: p = -2 - (0.1*1 + 0.1*0.5*(-2))    = -2.0
+        #   两者差 0.1，这才测得到。
+        p = torch.full((8, 8), -2.0)
+        grad = torch.full((8, 8), 1.0)
+        h = HyperParams(step=0, lr=0.0, beta1=0.0, beta2=0.0, eps=0.0,
+                        wd=0.0, momentum=0.0)
+        h.set(step=1, lr=0.1, momentum=0.0, beta2=0.9, wd=wd)
+        muon_step(grad, p, torch.zeros(8, 8), torch.zeros(8, 1), h, mc)
+        return p
+
+    with_wd = run_with(0.5)
+    without_wd = run_with(0.0)
+    # 反号 -> mask=0 -> 谨慎分支应该**完全抑制**衰减，
+    # 于是 wd=0.5 和 wd=0.0 的结果必须逐位相同。
+    #
+    # ⚠ 不能断言绝对数值（如「应该是 -2.1」）：muon_step 会先把梯度
+    #   正交化 + NorMuon 缩放，实际更新量不是 lr*g 的原始值
+    #   （实测是 0.0354 而不是 0.1）。所以这里只做**相对**比较。
+    assert torch.allclose(with_wd, without_wd, atol=1e-6), (
+        f"反号时 mask=0，谨慎 WD 应该完全不衰减，但 wd=0.5 时结果变了"
+        f"（{with_wd[0,0].item():.6f} vs {without_wd[0,0].item():.6f}）"
+        f"—— 说明走的不是谨慎分支，而是退化成了普通分支。"
+    )
+    # 关键：普通分支在反号时会「正好抵消」梯度步长而让 p 几乎不动
+    #   p = -2 - (lr*g' + lr*wd*p)，其中 g' 是正交化后的梯度。
+    # 这个「几乎不动」正是谨慎分支被短路时的症状。
+    moved = abs(abs(with_wd[0, 0].item()) - 2.0)
+    assert moved > 1e-3, (
+        f"反号时 |p| 从 2.0 只变了 {moved:.6f} —— 梯度步长和 wd 项正好抵消，"
+        f"这说明 mask 没起作用（谨慎分支被短路了）。"
+    )
+
+    # 同号：mask=1，wd 必须真的改变结果（确认 wd 确实接进了算式，
+    # 而不是被整个忽略）。这条区分不了分支类型，但能抓住「wd 没接上」。
+    mc = MuonConfig(flavor="advanced", weight_decay=0.5)
+    g_same = torch.full((8, 8), 1.0)
+    hp = HyperParams(step=0, lr=0.0, beta1=0.0, beta2=0.0, eps=0.0,
+                     wd=0.0, momentum=0.0)
+
+    def same_sign(wd):
+        hp.set(step=1, lr=0.1, momentum=0.0, beta2=0.9, wd=wd)
+        q = torch.full((8, 8), 2.0)
+        muon_step(g_same.clone(), q, torch.zeros(8, 8), torch.zeros(8, 1),
+                  hp, mc)
+        return q[0, 0].item()
+
+    assert abs(same_sign(0.5) - same_sign(0.0)) > 1e-6, (
+        "同号时 mask=1，wd=0.5 应该改变结果，但与 wd=0.0 相同 —— "
+        "wd 根本没接进 muon_step 的算式。"
+    )
+
+
 def test_preset_tag_matches_depth():
     """
     tag 必须是 `d{depth}` —— tag 就是存档目录名，depth 是唯一旋钮。

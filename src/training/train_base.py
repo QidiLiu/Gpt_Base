@@ -76,6 +76,23 @@ def parse_args():
         ("all-tricks", "开启全部 5 个残差流 trick"),
     ]:
         p.add_argument(f"--{flag}", action="store_true", help=help_)
+    # ⚠ 这是矩阵参数的 weight decay（λ_ref，缩放前）。
+    #   它的存在意义是让「谨慎 WD」（教程卷4 第 26 章）**可被触达** ——
+    #   MuonConfig.weight_decay 恒为 0 时，muon_step 里
+    #   `lr * wd * param * mask` 恒等于 0，那条分支等于空转，
+    #   而 CLI 上又没有开关去改它，于是没有任何办法能打开 wd。
+    #
+    #   实际生效的值还要经过 resolve_scaling 的 T_epoch 缩放：
+    #       λ = λ_ref · √(B/B_ref) · (D_ref/D)
+    #   ⚠ 缩放因子**强烈依赖档位**，不是常数 —— 它取决于 batch 和数据量，
+    #     而这两者跨档差异很大。实测（λ=0.05 时）：
+    #         full 档      B=2^20  D=2.19B   factor=0.213  -> 峰值 0.0107
+    #         ablation 档  B=65536 D=203M    factor=2.039  -> 峰值 0.1020
+    #     相差 9.5 倍。所以**不能跨档位照搬 λ** —— 要比就同档位比。
+    p.add_argument("--muon-weight-decay", type=float, default=None,
+                   help="矩阵参数的 weight decay（λ_ref，缩放前）。0=关闭。"
+                        "缩放后峰值 = λ×√(B/B_ref)×(D_ref/D)，"
+                        "该因子随档位变化（full≈0.21, ablation≈2.04），别跨档照搬")
     p.add_argument("--num-iterations", type=int, default=None, help="覆盖步数")
     p.add_argument("--device-batch-size", type=int, default=None, help="覆盖 micro-batch")
     p.add_argument("--target-param-data-ratio", type=float, default=None,
@@ -109,6 +126,10 @@ def apply_overrides(cfg, args) -> None:
             setattr(m, f"use_{name}", True)
     if args.muon_advanced:
         cfg.optim.muon.flavor = "advanced"
+    # 必须在 resolve_scaling 之前写：wd 的缩放因子依赖 B 和 D，
+    # 而 resolve_scaling 会读 run.optim.muon.weight_decay（train_base.main 里）。
+    if args.muon_weight_decay is not None:
+        cfg.optim.muon.weight_decay = args.muon_weight_decay
     if args.num_iterations is not None:     cfg.train.num_iterations = args.num_iterations
     if args.device_batch_size is not None:  cfg.train.device_batch_size = args.device_batch_size
     if args.target_param_data_ratio is not None:
@@ -177,7 +198,21 @@ def make_schedulers(train_cfg, num_iterations: int, weight_decay_final: float):
         return 0.97
 
     def weight_decay(step: int) -> float:
-        # 余弦衰减到 0（乘以 weight_decay_final 作为终点比例）
+        """
+        余弦衰减到 0。
+
+        `weight_decay_final` 是**缩放后的峰值**（来自 resolve_scaling 的
+        weight_decay_scaled），不是「终点值」。曲线形状：
+            step 0        -> peak × 1.0
+            step n/2      -> peak × 0.5
+            step n        -> 0
+
+        注：TrainConfig 里曾有个 weight_decay_final_frac 想表达「末尾停在
+        peak 的某个比例」，但它从未被任何代码读取（grep 全仓只有定义行），
+        已删除。真要那个行为，把这里改成
+            weight_decay_final * (frac + (1 - frac) * cos)
+        —— 但那是一个从未验证过的调度形状，别顺手加。
+        """
         cos = 0.5 * (1 + math.cos(math.pi * min(step, num_iterations) / num_iterations))
         return cos * weight_decay_final
 
@@ -257,6 +292,15 @@ def main():
     log0("── 优化器 " + "─" * 56)
     log0(f"  Muon flavor = {cfg.optim.muon.flavor}"
          + ("（Polar Express + MuonEq + Muon+ + NorMuon + 谨慎WD）" if cfg.optim.muon.flavor == "advanced" else "（5 步 Newton-Schulz）"))
+    # 把 weight decay 显式打出来。它极易变成 0 而没人察觉 ——
+    # 0 会让「谨慎 WD」整条分支乘 0 空转，而日志里看不出来（见 MuonConfig.weight_decay）。
+    _wd_ref = cfg.optim.muon.weight_decay
+    _wd_peak = sc["weight_decay_scaled"]
+    if _wd_ref > 0:
+        log0(f"  Weight decay = λ_ref {_wd_ref} -> 缩放后峰值 {_wd_peak:.5f}"
+             f"（余弦衰减到 0）")
+    else:
+        log0("  Weight decay = 关闭（λ_ref=0，谨慎 WD 分支不生效）")
     optimizer = setup_optimizer(model, cfg.optim, batch_lr_scale=sc["batch_lr_scale"])
     for g in optimizer.param_groups:
         g["initial_lr"] = g["lr"]

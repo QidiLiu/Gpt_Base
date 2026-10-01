@@ -420,10 +420,14 @@ def setup_optimizer(model, optim_cfg, batch_lr_scale: float = 1.0) -> MuonAdamW:
             weight_decay=0.0))
 
     # ── Muon 组：按形状分组（必须同形才能 stack）──
+    # ⚠ 这里的 weight_decay 是 mc.weight_decay 的**原始 λ_ref**，
+    #   不是 resolve_scaling 算出的缩放后峰值。缩放由训练循环负责：
+    #   每步 optimizer.step() 前会 g["weight_decay"] = wd_sched(step)（见
+    #   train_base.py）。所以这个字段只是「起点」，真正生效的是调度值。
     for shape in sorted({p.shape for p in matrix_params}):
         param_groups.append(dict(
             kind="muon", params=[p for p in matrix_params if p.shape == shape],
-            lr=mc.lr * batch_lr_scale, momentum=0.95, ns_steps=mc.ns_steps,
+            lr=mc.lr * batch_lr_scale, momentum=mc.momentum, ns_steps=mc.ns_steps,
             beta2=0.9, weight_decay=mc.weight_decay))
 
     n_muon = sum(len(g["params"]) for g in param_groups if g["kind"] == "muon")

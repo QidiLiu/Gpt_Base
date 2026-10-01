@@ -81,7 +81,7 @@ bash script/progress.sh        # 告诉你哪一章还没做完
 
 ```bash
 uv run pytest tests/ -q
-# 预期：71 failed, 123 passed, 7 skipped
+# 预期：71 failed, 125 passed, 8 skipped
 ```
 
 > ### ⚠️ 这 69 个 `failed` 是**正确**的
@@ -299,7 +299,7 @@ bash script/chat.sh       smoke   # 交互式聊天
 uv run pytest tests/ -v
 ```
 
-191 个测试：卷0 12 + 卷1 31（21 + 精确续训 10）+ 卷2-3 28 + 卷4 14 + 只读护栏 106
+194 个测试：卷0 15 + 卷1 31（21 + 精确续训 10）+ 卷2-3 28 + 卷4 14 + 只读护栏 106
 + 只读代码护栏 103（metrics 11 + checkpoint 15 + engine 50 + tasks 27）
 另有 10 个判据自检（`tests/test_judging_soundness.py`），
 全量 `pytest tests/` 收集到 192 个。

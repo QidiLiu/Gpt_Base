@@ -139,7 +139,27 @@ class MuonConfig:
     lr: float = 0.02                # 矩阵参数学习率
     momentum: float = 0.95          # Nesterov 动量
     ns_steps: int = 5               # 正交化迭代步数
-    weight_decay: float = 0.0       # 矩阵参数的权重衰减
+
+    # 矩阵参数的 weight decay（λ_ref，**缩放前**的值）。
+    #
+    # ⚠ 为什么默认还是 0.0：谨慎 WD 是 advanced flavor 的一部分，但只有
+    #   λ ≠ 0 时它才真正起作用。设成 0 的话 muon_step 里
+    #   `lr * wd * param * mask` 恒为 0，整条分支等于空转。
+    #   真正跑训练的档位（full）在 PRESETS 里显式给了 0.1。
+    #
+    # ⚠ 0.1 这个值是**推测**，不是从 nanochat 抄来的：
+    #   nanochat 把 weight_decay 放在 train 脚本的 CLI 默认值里，
+    #   没有进 optim.py。我们比对的是量级 —— AdamWConfig 里
+    #   embedding=0.001 / unembedding=0.01，矩阵参数通常比 embedding 大一个量级。
+    #   真正的验证方式是 ablation 档跑 44 分钟对拍，不要拿 full 档试超参。
+    #
+    # 缩放链见 resolve_scaling 的「步骤 4」：λ = λ_ref · √(B/B_ref) · (D_ref/D)
+    #
+    # ⚠ 缩放因子**不是常数**，强烈依赖档位的 batch 与数据量。实测（λ=0.05 时）：
+    #     full 档      B=2^20  D=2.19B   factor=0.213  ->  峰值 0.0107
+    #     ablation 档  B=65536 D=203M    factor=2.039  ->  峰值 0.1020
+    #   相差 9.5 倍。**λ 不可跨档位照搬**，要比就同档位比。
+    weight_decay: float = 0.0
     # advanced 模式下逐项可关（用于消融）
     use_polar_express: bool = True
     use_muon_eq: bool = True
@@ -183,7 +203,10 @@ class TrainConfig:
     warmup_steps: int = 40
     warmdown_ratio: float = 0.65    # 最后 65% 的步数用来降 LR
     final_lr_frac: float = 0.05     # 末尾 LR 降到峰值的 5%
-    weight_decay_final_frac: float = 0.0   # 末尾 WD 衰减到这个比例（乘数）
+    # 注：曾经有个 weight_decay_final_frac（「末尾 WD 衰减到这个比例」）
+    # 从未被任何代码读取 —— grep 全仓只有它的定义行。wd_sched 的余弦本来
+    # 就从峰值衰减到 0，所以「末尾停在某个比例」这个能力从来没被使用过。
+    # 现在删掉它，而不是接上：接上会引入一个从未验证过的调度形状。
     # ---- 评测与存档 ----
     eval_every: int = 100           # 每 N 步算一次 val bpb（-1 = 关）
     eval_tokens: int = 1 * 524288   # 每次 val 用多少 token
@@ -320,11 +343,11 @@ PRESETS = {
     "full": dict(
         tag="d24", depth=24,
         aspect_ratio=32, head_dim=64, sequence_len=1024, vocab_size=16384,
-        # total_batch_size 显式钉死，不留 -1：preset 应该是可复现的快照，
-        # 而不是 resolve_scaling 公式的输出。1048576 来自推导
+        # total_batch_size 来自推导
         #   B_ref × (target_tokens / D_ref)^0.383 = 2^19 × (2.19B/330M)^0.383
-        # 并向上取整到 2 的幂。必须被 device_batch_size×sequence_len 整除：
-        #   1048576 / (4 × 1024) = 256 ✓（grad_accum=256）
+        # 并向上取整到 2 的幂。必须被 device_batch_size×sequence_len 整除。
+        # total_batch_size 显式钉死，不留 -1：preset 应该是可复现的快照，
+        # 而不是 resolve_scaling 公式的输出。
         device_batch_size=8, total_batch_size=1048576,
         # ⚠ 改 device_batch_size 时必须检查 total_batch_size 的整除性 ——
         #   resolve_scaling 会 assert（total_batch % (dbs × T) == 0）。
@@ -346,6 +369,12 @@ PRESETS = {
         muon_flavor="advanced",
         use_resid_lambdas=True, use_x0_lambdas=True, use_value_embeds=True,
         use_smear=True, use_backout=True,
+        # 矩阵参数的 weight decay。⚠ 必须显式给 —— MuonConfig 默认是 0.0，
+        # 而 0.0 会让「谨慎 WD」这条分支完全空转（乘 0 等于没做）。
+        # 见 MuonConfig.weight_decay 的注释：0.1 是按量级推测的值，
+        # 建议先用 ablation 档对拍确认，再拿这 41 小时去跑 full。
+        # → 缩放后峰值 0.0213（缩放因子 0.213，见 MuonConfig.weight_decay）
+        muon_weight_decay=0.1,
     ),
 }
 

@@ -164,6 +164,20 @@ def muon_step(stacked_grad, stacked_param, momentum_buf, second_moment_buf,
        g 与 p 同号 -> p 减小 -> 靠近 0），这时候才衰减。
        反号时更新把参数推离 0，衰减只会阻碍学习。
 
+    ★★ 写完第 5 步后，**去确认 wd 真的非 0** ★★
+       这一步只写了「怎么衰减」，没写「衰减多少」—— 那个数来自
+       hp["wd"]，而 hp["wd"] 来自 param_group["weight_decay"]，
+       再往上来自 MuonConfig.weight_decay。
+       它的默认值是 **0.0**，于是默认情况下
+           lr * wd * param * mask  ≡ 0
+       上面这整套 mask 逻辑等于**从未被执行过**，而且**不报错**。
+       真实的坑：这个失败点在 muon_step **之外**（配置层），
+       所以任何直接构造 HyperParams(wd=非0) 再调 muon_step 的测试
+       都测不到它 —— 那条路径把配置链整个绕开了。
+       验证方式：`bash script/train_base.sh ablation --muon-weight-decay 0.05`
+       启动日志会打印 `Weight decay = λ_ref 0.05 -> 缩放后峰值 ...`。
+       见 tests/test_presets.py 的 test_full_preset_cautious_wd_actually_moves_params。
+
     ⚠ use_compiled_ortho 这个参数是给「把正交化单独编译」预留的。
       本项目默认 False（直接调用），因为 advanced 版图太大，
       fullgraph=True 容易编译失败。simple 版才值得编译。

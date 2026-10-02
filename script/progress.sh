@@ -39,6 +39,16 @@ declare -A CHAPTERS=(
   ["26"]="tests/test_optim.py -k 'cautious'"
   ["27"]="tests/test_optim.py -k 'grouping'"
   ["28"]="tests/test_optim.py -k 'hyperparams'"
+  # ── 卷 5-8：只读章。不需要敲代码，判据是「别把它改坏」。 ──
+  ["29"]="tests/test_dataloader_resume.py -k 'resume'"
+  ["30"]="tests/test_presets.py -k 'weight_decay or warmdown or lr'"
+  ["31"]="tests/test_optim.py -k 'grouping or adamw_step'"
+  ["32"]="tests/test_engine.py -k 'kvcache or prefill or cache'"
+  ["33"]="tests/test_engine.py -k 'generate or stops or tool'"
+  ["34"]="tests/test_data.py -k 'mask or truncate or alternation'"
+  ["35"]="tests/test_metrics.py -k 'pass_at_k or variance or bpb or multiple_choice'"
+  ["36"]="tests/test_checkpoint.py -k 'save_load or resume or json or find_latest'"
+  ["37"]="tests/test_judging_soundness.py -k 'progress_sh or tutorial_claims or scratch_gating or entry_scripts'"
 )
 
 WANT="${1:-}"

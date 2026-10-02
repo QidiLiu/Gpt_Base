@@ -364,6 +364,29 @@ bias 开关（目前没有单独暴露），只能在 config 里改。
 
 ---
 
+>
+> ⚠ **2026-10 才知道：`--norm-type layer` 曾经有两个 bug，
+> 所以这个消融选项从未真正工作过。**
+>
+> 跑消融跑批时它 3 秒就崩（`expected scalar type BFloat16 but found Float`）。
+> 顺藤摸瓜发现两个独立根因：
+>
+> 1. `make_norm` 用 `torch.ones(ndim)` 建 γ/β，默认 **float32**，
+>    而激活是 bf16 → `F.layer_norm` 直接抛。CPU 上全是 float32 所以「碰巧能跑」。
+> 2. **更严重**：γ/β 是被 `lambda` 闭包捕获的，
+>    **根本不在 `model.parameters()` 里** → **optimizer 永远看不到它们**，
+>    永远停在 (1, 0)。那样训出来的不是「LayerNorm」，
+>    是「没有可学习仿射的 LayerNorm」。
+>
+> `setup_optimizer` 的「参数分组不完整」assert 抓不到第二个 ——
+> 它检查的是「模型有的参数是否都被分组」，方向正好相反。
+>
+> 已修（`LayerNormAffine(nn.Module)` + `init_weights` 写回 (1,0)），
+> 4 条判据 + 3 组故障注入。见 commit `51eb4a8`。
+> **本章如果早点真的跑过这个消融，就不会留到现在。**
+
+---
+
 ## 下一章
 
 [第 09 章：RoPE 旋转位置编码](09-RoPE旋转位置编码.md) ——

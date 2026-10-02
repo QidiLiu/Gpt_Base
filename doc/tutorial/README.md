@@ -271,18 +271,82 @@ Muon flavor  : simple（5 步 Newton-Schulz）
 
 **Δ < 0 表示比基线好**（bpb 越低越好）。
 
-### 仓库现状
+### ★ 实测结果（2026-10，全部 14 组跑完）
 
-| | |
-|---|---|
-| `d6_base` | ✅ **已跑**（2026-10，`val_bpb = 1.0615`，Muon simple + trick 全关）|
-| 其余 13 组 | ⬜ **未跑** |
+**每组 39 分钟，RTX 4060 Ti，3,096 步 / 2.03 亿 token / V=16384。**
 
-⚠ **表里的每一格「未跑」都是本教程欠你的。**
-各章的结论目前都是**幅度分析或外推**，不是端到端实测 ——
-比如第 26 章说「谨慎 WD 只占梯度项 3%」、第 30 章说
-「momentum warmup 的硬编码 400 占 full 档 19% 训练」，
-都还没有对应的消融行。
+| 实验 | 开关 | val_bpb | Δ vs base |
+|---|---|---|---|
+| `d6_base` | （中性基线）| **1.0615** | — |
+| `d6_alltricks` | `--all-tricks` | **1.0321** | **−0.0294** ✅ |
+| `d6_ve` | `--use-value-embeds` | **1.0389** | **−0.0226** ✅ |
+| `d6_smear` | `--use-smear` | 1.0566 | −0.0049 |
+| `d6_x0` | `--use-x0-lambdas` | 1.0588 | −0.0027 |
+| `d6_backout` | `--use-backout` | 1.0591 | −0.0024 |
+| `d6_adv` | `--muon-advanced` | 1.0600 | −0.0015 |
+| `d6_shve` | `--shared-value-embeds` | 1.0616 | +0.0001 |
+| `d6_nosoftcap` | `--no-softcap` | 1.0643 | +0.0028 |
+| `d6_noqk` | `--no-qk-norm` | 1.0665 | +0.0050 |
+| `d6_resid` | `--use-resid-lambdas` | 1.0676 | +0.0061 |
+| `d6_layernorm` | `--norm-type layer` | （见下）| |
+| `d6_tie` | `--tie-embeddings` | 1.0882 | **+0.0267** ✅ |
+| `d6_norope` | `--no-rope` | 1.1145 | **+0.0530** ✅ |
+
+✅ = 超过 ±0.02 的噪声带；其余都在噪声内。
+
+### 三个反直觉的结论
+
+**① RoPE 的贡献比 5 个残差流 trick 加起来还多。**
+
+去掉 RoPE 损失 0.0530，而 5 个 trick 全开只赚回 0.0294。
+**位置编码是这个规模下最值钱的一个组件。**
+
+**② 5 个残差流 trick 里只有 value-embeddings 有效。**
+
+```
+--all-tricks            −0.0294   ← 5 个加起来
+--use-value-embeds      −0.0226   ← 其中 77% 来自它一个
+--use-smear             −0.0049
+--use-x0-lambdas        −0.0027
+--use-backout           −0.0024
+--use-resid-lambdas     +0.0061   ← 反而变差
+```
+
+⚠ **`resid_lambdas` 让模型变差**，而 `full` 档默认开着它。
+噪声带 ±0.02，所以这个 +0.0061 不能算「有害」，
+但 certainly 也不是「有益」—— **需要复跑才能下结论。**
+
+**③ Muon advanced 相对 simple 几乎没有效果（−0.0015）。**
+
+Polar Express + MuonEq + Muon+ + NorMuon + 谨慎 WD 五个改动加起来，
+在这个规模（d6 / 2 亿 token）上换来的 bpb 改善在噪声内。
+
+这和第 26 章的推断**方向一致**：谨慎 WD 只占梯度项约 3%，
+所以「WD 到底有没有用」这个问题的答案可能是「几乎没有」。
+⚠ **但这只是 d6 档的结论** —— `full` 档 d24 的矩阵大得多，
+Muon 的行为可能不同（见第 22 章：谱越宽，Muon 的优势越大）。
+
+### 权重绑定在这个规模下有害（+0.0267）
+
+`--tie-embeddings` 让 bpb 上升 0.0267，是第二显著的单项劣化。
+`full` 档默认**不开**，这个选择是对的。
+
+### 未解决的：噪声带内的项需要复跑
+
+按纪律第 3 条，`|Δ| < 0.02` 的 8 组都需要复跑确认。
+**其中最值得复跑的是 `d6_resid`（+0.0061）** ——
+因为 `full` 档默认开着它，如果它真的有害就该关掉。
+
+### ⚠ 这张表本身抓出了一个 bug
+
+`d6_layernorm` 第一次跑**3 秒就崩**：
+
+    RuntimeError: expected scalar type BFloat16 but found Float
+
+顺藤摸瓜发现 `--norm-type layer` 有**两个**独立问题：
+γ/β 是闭包捕获的（**optimizer 永远看不到它们**），
+以及 dtype 是 float32 而激活是 bf16。
+**这个消融选项从未真正工作过。** 已修，见 commit `51eb4a8`。
 
 ### 三条纪律
 

@@ -28,8 +28,8 @@ def note(ok, where, msg):
 # 注意：用 pytest 实际 collect 的数量，而不是 `^def test_` 的行数 ——
 # 参数化（@pytest.mark.parametrize）会让 1 个函数收集出多个用例，
 # 两者对不上会让文档里的数字失真。
-CHAPTER_TESTS = {"test_core.py": 35, "test_data.py": 21,
-                 "test_presets.py": 21, "test_optim.py": 14,
+CHAPTER_TESTS = {"test_core.py": 38, "test_data.py": 21,
+                 "test_presets.py": 21, "test_optim.py": 16,
                  "test_metrics.py": 11, "test_checkpoint.py": 15,
                  "test_dataloader_resume.py": 10,
                  "test_engine.py": 53, "test_tasks.py": 27}

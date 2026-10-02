@@ -44,8 +44,8 @@ bash script/progress.sh      # 逐章告诉你「我该做哪一章」
 > 想知道这些 failed 到底是什么意思，见 [第 01 章](01-环境与全景图.md) 的
 > 「⚠️ 先搞清楚：你现在看到的『一堆失败』是**正确**的」。
 >
-> `git checkout solution` 后再跑，会看到 `215 passed, 2 skipped` —— 那才是全绿。
-> **在 `main` 上看到 `215 passed` 才说明你走错了分支。**
+> `git checkout solution` 后再跑，会看到 `220 passed, 2 skipped` —— 那才是全绿。
+> **在 `main` 上看到 `220 passed` 才说明你走错了分支。**
 
 `bash script/train_base.sh smoke` 在卷 1-4 敲完之前**跑不通是正常的**
 （它依赖你还没实现的那部分），不用 troubleshoot。
@@ -234,24 +234,40 @@ bash scratch/ablation.sh d6_base
 Muon flavor  : simple（5 步 Newton-Schulz）
 ```
 
+### ★ 开关方向：两类实验方向相反
+
+基线是「**架构全开 + trick 全关 + Muon simple**」。所以：
+
+| 要测什么 | 方向 | 例子 |
+|---|---|---|
+| **架构特征**的贡献 | 基线里**是开的** → 关掉它 | `--no-rope` |
+| **残差流 trick** 的贡献 | 基线里**是关的** → 打开它 | `--use-smear` |
+
+⚠ **写成 `--no-smear` 会得到一个和基线完全一样的配置** ——
+开关是 `no_*` 但那个 trick 本来就没开。Δ 会是 0.0000，
+看起来像「这个 trick 毫无影响」，实际是**命令打错了**。
+
 ### 表模板
 
-| 实验 | 开关 | val_bpb | Δ vs base |
-|---|---|---|---|
-| `d6_base` | （中性基线） | **1.0615** | （基线）|
-| `d6_norope` | `--no-rope` | | |
-| `d6_noqk` | `--no-qk-norm` | | |
-| `d6_nosmear` | `--no-smear` | | |
-| `d6_nobackout` | `--no-backout` | | |
-| `d6_noresid` | `--no-resid-lambdas` | | |
-| `d6_nox0` | `--no-x0-lambdas` | | |
-| `d6_nove` | `--no-value-embeds` | | |
-| `d6_nosoftcap` | `--no-softcap` | | |
-| `d6_tie` | `--tie-embeddings` | | |
-| `d6_layernorm` | `--norm-type layer` | | |
-| `d6_window` | `--window-pattern ...` | | |
-| `d6_shve` | `--shared-value-embeds` | | |
-| `d6_adv` | `--muon-advanced` | | |
+| 实验 | 方向 | 开关 | val_bpb | Δ vs base |
+|---|---|---|---|---|
+| `d6_base` | — | （中性基线） | **1.0615** | （基线）|
+| **残差流 trick（基线里是关的 → 打开）** ||||
+| `d6_smear` | 开 | `--use-smear` | | |
+| `d6_backout` | 开 | `--use-backout` | | |
+| `d6_resid` | 开 | `--use-resid-lambdas` | | |
+| `d6_x0` | 开 | `--use-x0-lambdas` | | |
+| `d6_ve` | 开 | `--use-value-embeds` | | |
+| `d6_alltricks` | 开 | `--all-tricks` | | |
+| **架构特征（基线里是开的 → 关掉）** ||||
+| `d6_norope` | 关 | `--no-rope` | | |
+| `d6_noqk` | 关 | `--no-qk-norm` | | |
+| `d6_nosoftcap` | 关 | `--no-softcap` | | |
+| `d6_tie` | 关 | `--tie-embeddings` | | |
+| `d6_layernorm` | 关 | `--norm-type layer` | | |
+| `d6_shve` | 关 | `--shared-value-embeds` | | |
+| **优化器** ||||
+| `d6_adv` | 关 | `--muon-advanced` | | |
 
 **Δ < 0 表示比基线好**（bpb 越低越好）。
 
@@ -308,7 +324,7 @@ bash script/chat.sh       smoke   # 交互式聊天
 
 ## 卡住了怎么办
 
-1. **跑测试**：`uv run pytest tests/ -q`。207 个章节判据（另加 10 个判据自检）覆盖了形状、因果性、
+1. **跑测试**：`uv run pytest tests/ -q`。212 个章节判据（另加 10 个判据自检）覆盖了形状、因果性、
    RoPE、KV cache、优化器等最容易出错的地方，挂了就说明你的改动引入了 bug。
 2. **看注释**：本项目的代码注释密度很高，尤其是「为什么这么写」的部分，
    基本每个非显然的决定都有解释。

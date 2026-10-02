@@ -102,7 +102,8 @@ def orthogonalize_simple(G: torch.Tensor, steps: int = 5) -> torch.Tensor:
 # ===========================================================================
 def orthogonalize_advanced(G: torch.Tensor, steps: int = 5,
                            use_muon_eq: bool = True,
-                           use_muon_plus: bool = True,
+                           use_frobenius_snap: bool = True,
+                           use_muon_plus: bool = False,
                            use_polar_express: bool = True) -> torch.Tensor:
     """
     相比 simple 版多了三件事，每件都修一个具体问题：
@@ -120,30 +121,36 @@ def orthogonalize_advanced(G: torch.Tensor, steps: int = 5,
        做法：换用针对「最大化 0 点斜率」优化出来的 5 组系数。
        出处：Polar Express, arXiv 2505.16932
 
-    3) Muon+ 重归一化（use_muon_plus）
+    3) 两个「重归一化」，**彼此独立**，名字各归各位
        ⚠⚠⚠ **名字有误导：这不是论文的 Muon+，也不是它要修的问题。**
 
-       论文（arXiv 2602.21545）说的 Muon+ 是：在正交化之后
-       插入一次**沿列或沿行的 L2 归一化**（每行/每列拉到单位长度），
-       目的是消除「post-polar imbalanced update」—— 论文证明
-       实际的 5 步极化会**放大**行列范数方差，而不是消除它。
+       这两个开关曾经是一个，叫 `use_muon_plus`，但它做的不是论文那件事。
+       2026-10 拆开并各自改名 —— **名字不副实的开关比没有开关更糟**，
+       因为读代码的人会按名字推断行为。
 
-       这里实际做的是：把**全局** Frobenius 范数 snap 到 √min(m,n)。
+       (a) use_frobenius_snap —— **旧 `use_muon_plus` 的真实行为**
+           把**全局** Frobenius 范数 snap 到 √min(m,n)。
+           一个标量乘数：不改变行与行之间的**相对**范数。
 
-       这两件事的效果差 6 个数量级。实测（256×128，列范数跨 100 倍）：
-           仅正交化（基线）      行方差 2.358e-03   列方差 8.041e-03
-           本实现的「Muon+」     行方差 2.235e-03   列方差 7.622e-03   ← 只改善 5%
-           论文版 Norm_row      行方差 7.591e-15   列方差 2.988e-02   ← 改善 31 万倍
-       原因：全局标量乘数不改变行与行之间的**相对**范数，
-       而论文要消除的正是那个相对差异。
+       (b) use_muon_plus —— **论文 arXiv 2602.21545 的真 Muon+**
+           正交化之后插入一次**逐行 L2 归一化**（每行拉到单位长度）。
+           论文要消除的是「post-polar imbalanced update」：它证明
+           实际的 5 步极化会**放大**行列范数方差，而不是消除它。
 
-       早期版本的 docstring 把它说成「让推不动的极小奇异值被整体放大」
+       两者效果差 6 个数量级。实测（256×128，列范数跨 100 倍）：
+           仅正交化（基线）        行方差 2.358e-03   列方差 8.041e-03
+           (a) Frobenius snap     行方差 2.235e-03   列方差 7.622e-03   ← 只改善 5%
+           (b) 论文 Muon+ Norm_row 行方差 7.591e-15  列方差 2.988e-02   ← 改善 31 万倍
+       原因：(a) 是全局标量乘数，动不了行间**相对**差异；
+       而 (b) 要消除的正是那个相对差异 —— 逐行拉到 1，行方差自然归零。
+
+       ⚠ **(b) 默认关闭。** 打开它是一次真正的行为改动：
+       会改变 full 档全部训练结果，且需要重扫 lr（(a) 那层归一化
+       已经被当前 lr 隐式补偿过了）。详见 tutorial/25。
+
+       ⚠ 旧 docstring 说 (a) 的动机是「让推不动的极小奇异值被整体放大」
        —— 那个动机也是错的：整体放大对所有方向一视同仁，
        不改变极小方向相对其他方向的比例。
-
-       保留它的理由：(a) 它数值上无害（不产生 NaN/Inf）；
-       (b) 修它属于**行为改动**，会改变 full 档全部训练结果，
-       应作为独立决策而不是顺手改。详见 tutorial/25。
     """
     X = G
 
@@ -185,11 +192,17 @@ def orthogonalize_advanced(G: torch.Tensor, steps: int = 5,
     # ⚠ 见上面 docstring：这是全局 Frobenius 范数 snap，**不是**论文
     #   2602.21545 的行列 L2 归一化。实测效果差 6 个数量级。
     #   名字保留是为了不打乱 MuonConfig 的开关命名，但不要被它误导。
-    if use_muon_plus:
+    if use_frobenius_snap:
         # 一个 m×n 的半正交矩阵（m≤n），Frobenius 范数恰好是 √min(m,n)
         target_norm = min(X.size(-2), X.size(-1)) ** 0.5
         current_norm = X.float().norm(dim=(-2, -1), keepdim=True).clamp_min(1e-6)
         X = X * (target_norm / current_norm).to(X.dtype)
+
+    if use_muon_plus:
+        # 论文的 Muon+：逐行 L2 归一化（每行拉到单位长度）。
+        # 必须在 fp32 下算 —— 半正交矩阵的行范数可能很接近 0，
+        # bf16 的相对精度不够，会把行放大成噪声。
+        X = (X.float() / X.float().norm(dim=-1, keepdim=True).clamp_min(1e-12)).to(X.dtype)
 
     return X
 

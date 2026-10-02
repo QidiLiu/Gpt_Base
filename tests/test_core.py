@@ -1269,3 +1269,90 @@ def test_softcap_disabled_is_a_pure_passthrough():
     assert logits.abs().max() > 15.0, (
         "logit_softcap=0 时 logits 仍被压在 15 以内 —— 开关没生效"
     )
+
+
+# ===========================================================================
+# Muon advanced 的 5 个子开关必须有 CLI 入口
+#
+# ★ 2026-10 审计发现：MuonConfig 的 5 个 use_* 全部 default=True，
+#   而 `flavor="advanced"` 是 full 档的默认 —— 也就是说 **full 档的
+#   默认路径上有 5 个既不可见也不可调的旋钮**。
+#   和「默认在用却没有关闭开关」是同一类缺口
+#   （那次修的是 5 个残差流 trick，见 test_new_ablation_switches_actually_take_effect）。
+#
+#   补上 CLI 之后，「Muon 的每一项能不能单独消融」从此可回答。
+# ===========================================================================
+def test_muon_advanced_subswitches_all_have_cli_entry_points():
+    """
+    ★ 5 个子开关必须**双向**可达：`--no-xxx` 能关（default=True 的那些），
+    且 `--use-xxx` 的位置留着（将来加「开」开关时顺序契约不用重想）。
+    """
+    from training.train_base import parse_args, apply_overrides
+    from common.config import make_run_config
+
+    names = ("polar_express", "muon_eq", "frobenius_snap",
+             "nor_muon", "cautious_wd")
+
+    # (1) 默认：full 档是 advanced，且这 5 项默认全开
+    #     （use_muon_plus 不在其中 —— 它是论文版 Muon+，默认**关**，
+    #      因为打开会改变全部训练结果且需要重扫 lr。见 test_optim.py。）
+    c = make_run_config("full", vocab_size=8192)
+    apply_overrides(c, parse_args(["--mode", "full"]))
+    assert c.optim.muon.flavor == "advanced", \
+        "前置条件不成立：full 档默认不是 advanced —— 这条判据的前提变了"
+    for n in names:
+        assert getattr(c.optim.muon, f"use_{n}") is True, \
+            f"前置条件不成立：MuonConfig.use_{n} 默认不是 True"
+    assert c.optim.muon.use_muon_plus is False, \
+        "前置条件不成立：论文版 use_muon_plus 应该默认关闭"
+
+    # (2) 每个都能单独关掉，且**只**关掉那一个
+    for n in names:
+        c = make_run_config("full", vocab_size=8192)
+        apply_overrides(c, parse_args(["--mode", "full", f"--no-{n.replace('_','-')}"]))
+        assert getattr(c.optim.muon, f"use_{n}") is False, \
+            f"--no-{n.replace('_','-')} 没生效"
+        for other in names:
+            if other != n:
+                assert getattr(c.optim.muon, f"use_{other}") is True, \
+                    f"--no-{n.replace('_','-')} 顺带关掉了 {other}"
+
+
+def test_muon_advanced_switch_composes_with_muon_advanced():
+    """
+    ★ `--muon-advanced --no-polar-express` 必须意为
+    「用 advanced，但正交化退回 5 步 Newton-Schulz」。
+
+    这就是第 24 章那个「Polar Express 模式下 ns_steps>5 静默失效」
+    得以被研究的前提 —— 没有这个开关就没法做那个对照。
+    """
+    from training.train_base import parse_args, apply_overrides
+    from common.config import make_run_config
+
+    c = make_run_config("full", vocab_size=8192)
+    apply_overrides(c, parse_args(
+        ["--mode", "full", "--muon-advanced", "--no-polar-express"]))
+    assert c.optim.muon.flavor == "advanced", "--muon-advanced 被覆盖了"
+    assert c.optim.muon.use_polar_express is False, "--no-polar-express 没生效"
+    assert c.optim.muon.use_muon_eq is True, "不该动到 MuonEq"
+
+
+def test_muon_subswitch_flags_reach_the_arg_parser():
+    """
+    ★ 防「CLI 名字拼错」：--help 里必须真的能看到这 5 个 flag。
+
+    这与 `test_new_ablation_switches_actually_take_effect` 的第 (5) 步同源 ——
+    apply_overrides 里 getattr(args, "no_polar_express") 能拿到值，
+    **不代表** argparse 真的定义了 `--no-polar-express`。
+    拼错时 getattr 会静默返回我们给的 default False，开关就成了死代码。
+    """
+    import subprocess
+    import sys as _sys
+    from pathlib import Path
+    src_dir = Path(__file__).resolve().parent.parent / "src"
+    r = subprocess.run([_sys.executable, "-m", "training.train_base", "--help"],
+                       capture_output=True, text=True, cwd=str(src_dir), timeout=180)
+    assert r.returncode == 0, f"--help 失败: {r.stderr[-300:]}"
+    for flag in ("--no-polar-express", "--no-muon-eq", "--no-frobenius-snap",
+                 "--no-nor-muon", "--no-cautious-wd"):
+        assert flag in r.stdout, f"{flag} 没出现在 --help 里 —— 名字拼错了？"

@@ -136,14 +136,20 @@ def test_polar_express_beats_newton_schulz():
         f"Polar Express 应该更好: classic={e_classic:.4f} polar={e_polar:.4f}")
 
 
-def test_muon_plus_rescues_low_rank():
+def test_frobenius_snap_rescues_low_rank():
     """
     回归测试（ch25，本教程最重要的一条）：
     Newton-Schulz 推不动近零奇异值。
 
     低秩矩阵的谱里有大量 0，而 0 是 Newton-Schulz 迭代的**不动点**，
-    所以无论迭代多少步都救不回来。Muon+ 的重归一化能把整体范数 snap 回去，
-    从而把「推不动的方向」整体放大回来。
+    所以无论迭代多少步都救不回来。Frobenius 全局 snap 能把整体范数
+    拉回 √min(m,n)，从而把「推不动的方向」整体放大回来。
+
+    ⚠ **2026-10 改过名字**：这条原来叫 `test_muon_plus_rescues_low_rank`，
+      但它守的其实是 **Frobenius snap** 的性质（旧开关 `use_muon_plus`
+      做的是全局标量 snap，不是论文的 Muon+）。改名 + 拆分之后
+      断言逻辑一字未动，只是 `use_muon_plus=True` 换成了
+      `use_frobenius_snap=True`。
 
     实测（rank=8 的 128×192 矩阵，正交误差）：
         simple      3.34
@@ -153,11 +159,85 @@ def test_muon_plus_rescues_low_rank():
     """
     torch.manual_seed(0)
     G = torch.randn(64, 8) @ torch.randn(8, 192)     # rank = 8
-    simple = orthogonalize_advanced(G, use_muon_eq=False, use_muon_plus=False)
-    full = orthogonalize_advanced(G, use_muon_eq=False, use_muon_plus=True)
+    simple = orthogonalize_advanced(G, use_muon_eq=False, use_frobenius_snap=False)
+    full = orthogonalize_advanced(G, use_muon_eq=False, use_frobenius_snap=True)
     e_simple, e_full = orthogonality_error(simple), orthogonality_error(full)
     assert e_full < e_simple / 2, (
-        f"Muon+ 应该大幅改善低秩矩阵: simple={e_simple:.3f} full={e_full:.3f}")
+        f"Frobenius snap 应该大幅改善低秩矩阵: simple={e_simple:.3f} full={e_full:.3f}")
+
+
+def test_muon_plus_row_norm_flattens_row_norms_astronomically():
+    """
+    ★ 论文版 Muon+（arXiv 2602.21545）的核心性质，2026-10 补上。
+
+    论文要消除的是「post-polar imbalanced update」：5 步极化会
+    **放大**行列范数的方差。做法是正交化后**逐行 L2 归一化**。
+
+    不变量：**每一行的范数都恰好等于 1**，所以行方差掉到机器精度量级。
+
+    实测（256×128，行范数跨 100 倍）：
+        仅正交化（基线）           行方差 5.972e-04
+        Frobenius snap（旧行为）    行方差 5.663e-04   <- 只改善 5%
+        论文 Muon+（本条）        行方差 1.797e-15   <- 改善 3.3e11 倍
+
+    ★ 这个对照就是当初把 `use_muon_plus` 拆成两个开关的全部理由：
+    **一个名字盖着两种差 6 个数量级的行为。**
+    """
+    from optim.orthogonalize import orthogonalize_advanced as oa
+    torch.manual_seed(0)
+    G = torch.randn(256, 128)
+    G = G * (10 ** (torch.arange(256).float() / 255 * 2)).unsqueeze(1)
+
+    base = oa(G.clone(), use_frobenius_snap=False, use_muon_plus=False)
+    snap = oa(G.clone(), use_frobenius_snap=True, use_muon_plus=False)
+    paper = oa(G.clone(), use_frobenius_snap=False, use_muon_plus=True)
+
+    def row_var(X):
+        return X.float().norm(dim=-1).var().item()
+
+    v_base, v_snap, v_paper = row_var(base), row_var(snap), row_var(paper)
+    # 论文版：每一行都必须是单位长度（构造性成立，不是「接近」）
+    rnorm = paper.float().norm(dim=-1)
+    assert torch.allclose(rnorm, torch.ones_like(rnorm), atol=1e-5), (
+        f"论文 Muon+ 后每行范数应恒等于 1，实测 {rnorm.min():.6f}~{rnorm.max():.6f}")
+    # 它必须**远**优于基线和 Frobenius snap —— 这是拆开关的理由
+    assert v_paper < v_snap / 1e6, (
+        f"论文 Muon+ 行方差 {v_paper:.3e} 没有比 Frobenius snap 的 "
+        f"{v_snap:.3e} 好 6 个数量级 —— 两个开关就没必要拆开")
+    assert v_snap > v_base * 0.5, (
+        "前置条件不成立：Frobenius snap 竟然大幅改善了行方差，"
+        "那说明本条构造的矩阵不适合区分两者")
+
+
+def test_frobenius_snap_is_exactly_the_old_use_muon_plus_behavior():
+    """
+    ★ 改名 + 拆分之后，**默认行为必须逐位不变**。
+
+    这条把「旧开关 = Frobenius snap」钉成契约：
+    以后谁再改这两个开关的默认值，这条会红。
+
+    验证方式：手算全局 Frobenius 范数 snap，与 `use_frobenius_snap=True`
+    的输出逐位比较（关掉另外两个归一化以隔离它）。
+    """
+    from optim.orthogonalize import orthogonalize_advanced as oa
+    torch.manual_seed(0)
+    G = torch.randn(64, 128) * 3.0
+
+    got = oa(G.clone(), steps=5, use_polar_express=False, use_muon_eq=False,
+             use_frobenius_snap=True, use_muon_plus=False)
+
+    # 参照：先用同一套 NS 正交化但不做任何 snap
+    plain = oa(G.clone(), steps=5, use_polar_express=False, use_muon_eq=False,
+               use_frobenius_snap=False, use_muon_plus=False)
+    target = min(plain.size(-2), plain.size(-1)) ** 0.5
+    cur = plain.float().norm(dim=(-2, -1), keepdim=True)
+    want = plain * (target / cur).to(plain.dtype)
+
+    assert torch.equal(got, want), (
+        f"use_frobenius_snap=True 的行为变了（最大差 "
+        f"{(got - want).abs().max().item():.3e}）—— "
+        "它必须与旧版 use_muon_plus=True 逐位一致，否则历史结果不可复现"
+    )
 
 
 def test_nor_muon_scale_reduces_neuron_imbalance():

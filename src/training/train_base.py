@@ -74,6 +74,18 @@ def parse_args(argv=None):
         ("tie-embeddings", "打开权重绑定"),
         ("no-softcap", "关掉 logit softcap"),
         ("muon-advanced", "Muon 用 advanced 版（Polar Express + MuonEq + Muon+ + NorMuon）"),
+        # ⚠ 这 5 个是 MuonConfig 的子开关，**default 全是 True**，而
+        #   flavor=advanced（full 档默认）依赖它们。也就是说在改之前，
+        #   full 档的默认路径上有 5 个**不可见也不可调**的旋钮 ——
+        #   同一个「默认在用却无法关闭」的缺口，和上面 5 个 trick 同类。
+        #   补上之后 Muon 的每一项都能单独消融。
+        ("no-polar-express", "关掉 Polar Express（退回 5 步 Newton-Schulz）"),
+        ("no-muon-eq", "关掉 MuonEq"),
+        ("use-muon-plus", "开论文版 Muon+（逐行 L2 归一化，arXiv 2602.21545）。"
+                          "⚠ 默认关闭；打开会改变全部训练结果且需重扫 lr"),
+        ("no-frobenius-snap", "关掉 Frobenius 全局范数 snap（旧 use_muon_plus 的真实行为）"),
+        ("no-nor-muon", "关掉 NorMuon 方差缩减"),
+        ("no-cautious-wd", "关掉谨慎权重衰减（退回普通 decoupled WD）"),
         ("use-resid-lambdas", "开启 resid_lambdas"),
         ("use-x0-lambdas", "开启 x0_lambdas"),
         ("use-value-embeds", "开启 Value Embeddings"),
@@ -155,6 +167,17 @@ def apply_overrides(cfg, args) -> None:
         m.share_value_embeds = True
     if args.muon_advanced:
         cfg.optim.muon.flavor = "advanced"
+    # ⚠ 顺序同上：先开再关。这里全是「关」开关（默认 True），
+    #   但写成同一个循环是为了将来加 --muon-eq 这类「开」开关时
+    #   不用重新想顺序 —— 而且 `--muon-advanced --no-polar-express`
+    #   必须意为「用 advanced，但退回 5 步 NS」。
+    mu = cfg.optim.muon
+    for name in ("polar_express", "muon_eq", "frobenius_snap",
+                 "muon_plus", "nor_muon", "cautious_wd"):
+        if getattr(args, f"use_{name}", False):
+            setattr(mu, f"use_{name}", True)
+        if getattr(args, f"no_{name}", False):
+            setattr(mu, f"use_{name}", False)
     # 必须在 resolve_scaling 之前写：wd 的缩放因子依赖 B 和 D，
     # 而 resolve_scaling 会读 run.optim.muon.weight_decay（train_base.main 里）。
     if args.muon_weight_decay is not None:

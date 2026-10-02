@@ -156,6 +156,7 @@ def muon_step(stacked_grad, stacked_param, momentum_buf, second_moment_buf,
         g = orthogonalize_advanced(
             X, cfg.ns_steps,
             use_muon_eq=cfg.use_muon_eq,
+            use_frobenius_snap=cfg.use_frobenius_snap,
             use_muon_plus=cfg.use_muon_plus,
             use_polar_express=cfg.use_polar_express,
         )

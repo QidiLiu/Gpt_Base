@@ -178,7 +178,13 @@ class MuonConfig:
     # advanced 模式下逐项可关（用于消融）
     use_polar_express: bool = True
     use_muon_eq: bool = True
-    use_muon_plus: bool = True
+    # ⚠ 两个「重归一化」彼此独立，2026-10 从一个 use_muon_plus 拆开。
+    #   旧开关做的是 Frobenius 全局 snap，却叫 Muon+（不是论文那件事）——
+    #   **名字不副实的开关比没有开关更糟**。详见 orthogonalize.py 的 docstring。
+    use_frobenius_snap: bool = True   # 旧 use_muon_plus 的真实行为（全局标量 snap）
+    # 论文 arXiv 2602.21545 的真 Muon+（逐行 L2 归一化）。
+    # ⚠ 默认关闭：打开会改变 full 档全部训练结果，且需要重扫 lr。
+    use_muon_plus: bool = False
     use_nor_muon: bool = True
     use_cautious_wd: bool = True
 

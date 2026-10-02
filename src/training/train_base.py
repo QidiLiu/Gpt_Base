@@ -57,7 +57,7 @@ def parse_args():
     # 消融开关：直接覆盖 ModelConfig 的字段
     for flag, typ, help_ in [
         ("norm-type", str, "rms|layer"),
-        ("activation", str, "relu2|gelu"),
+        ("activation", str, "relu2|gelu|gelu_tanh"),
         ("window-pattern", str, "L|SSL|SSSL"),
         ("attn-impl", str, "flex|sdpa（滑窗走哪条路径，详见 model/layers.py）"),
     ]:

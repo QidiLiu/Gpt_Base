@@ -53,8 +53,10 @@ class ModelConfig:
     # 不受这个开关影响 —— 那条路径本来就是 FA2，flex 在那里没有收益。
     attn_impl: str = "flex"
 
-    # ---- MLP（消融：可选 "gelu"）----
-    activation: str = "relu2"     # "relu2" | "gelu"
+    # ---- MLP（消融：可选 "gelu" / "gelu_tanh"）----
+    # 候选值的权威来源是 model/layers.py 里 MLP.forward 的 if/elif
+    # 分支，不是这行注释。改 activation 的支持范围时记得三处同步。
+    activation: str = "relu2"     # "relu2" | "gelu" | "gelu_tanh"
 
     # ---- 输出头 ----
     tie_embeddings: bool = False  # True = wte 与 lm_head 共享权重（nanoGPT 的做法）

@@ -111,20 +111,20 @@ src/
 ### 卷 2 · 模型：tensor 怎么变成 logits
 | 章 | 标题 | 核心问题 |
 |---|---|---|
-| 07 | 先跑通一个最小 GPT | 最小可用的 GPT 长什么样 |
-| 08 | RMSNorm | 为什么可以砍掉偏置和减均值 |
-| 09 | **RoPE 旋转位置编码** | 位置信息怎么变成旋转 |
-| 10 | 注意力三步曲 | 逐行读懂 self-attention |
-| 11 | SDPA 与 FlashAttention | 为什么快（IO bound 视角） |
-| 12 | QK Norm 与 GQA | 稳定训练 + 省 KV cache |
-| 13 | MLP 与激活函数 | ReLU 平方 vs GELU |
-| 14 | 残差流与 Pre-LN | 梯度为什么要走旁路 |
-| 15 | 权重绑定与 logit softcap | 省参数 vs 防溢出 |
+| [07](07-先跑通一个最小GPT.md) | 先跑通一个最小 GPT | 最小可用的 GPT 长什么样 |
+| [08](08-RMSNorm.md) | RMSNorm | 为什么可以砍掉偏置和减均值 |
+| [09](09-RoPE旋转位置编码.md) | **RoPE 旋转位置编码** | 位置信息怎么变成旋转 |
+| [10](10-注意力三步曲.md) | 注意力三步曲 | 逐行读懂 self-attention |
+| [11](11-SDPA与FlashAttention.md) | SDPA 与 FlashAttention | 为什么快（IO bound 视角） |
+| [12](12-QK-Norm与GQA.md) | QK Norm 与 GQA | 稳定训练 + 省 KV cache |
+| [13](13-MLP与激活函数.md) | MLP 与激活函数 | ReLU 平方 vs GELU |
+| [14](14-残差流与Pre-LN.md) | 残差流与 Pre-LN | 梯度为什么要走旁路 |
+| [15](15-权重绑定与logit-softcap.md) | 权重绑定与 logit softcap | 省参数 vs 防溢出 |
 
 ### 卷 3 · nanochat 的架构 trick
 | 章 | 标题 | 核心问题 |
 |---|---|---|
-| 16 | **meta device 三步建模型** | 一个真实的性能陷阱 |
+| [16](16-meta-device三步建模型.md) | **meta device 三步建模型** | 一个比 NaN 更阴的性能陷阱 |
 | 17 | resid_lambdas 与 x0_lambdas | 逐层缩放残差流 |
 | 18 | Value Embeddings 与门控 | ResFormer 做了什么 |
 | 19 | Smear 与 Backout | 两个「便宜的小把戏」 |

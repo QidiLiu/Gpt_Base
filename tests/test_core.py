@@ -580,10 +580,25 @@ def test_meta_device_weights_are_all_finite():
     ch16 meta device 三步法的粒度判据。
 
     ★ 本项目最重要的一个 NaN 坑：__init__ 里算的 cos/sin 是在 meta device
-      上创建的（只有形状壳）。to_empty() 只分配**未初始化的垃圾内存**，
-      不填任何值 —— 实测会直接变成 NaN，loss 立刻是 nan。
-      漏掉「在 init_weights 里重算 RoPE」这一步，整个模型就废了，
-      而且症状是 loss=nan，没有任何报错指向真正的原因。
+      上创建的（只有形状壳）。to_empty() 只分配**未初始化的内存**，
+      不填任何值。漏掉「在 init_weights 里重算 RoPE」这一步，整个模型就废了。
+
+    ⚠ 这里有个比「NaN」更阴险的坑，写这个判据时才发现：
+      to_empty() 留下的是什么，**取决于是哪块内存**，实测有三种：
+
+        | 场景                       | max|cos| | isfinite |
+        |----------------------------|----------|----------|
+        | 全新进程的 CPU 分配         | NaN      | False    |
+        | 内存 churn 后的 CPU 回收块   | 4.4e+35  | **True** |
+        | CUDA 全新页                 | 0.0      | **True** |
+
+      只有第一种能被 `isfinite` 抓到。另两种是**有限垃圾** ——
+      「NaN 检查」根本不会红，但 RoPE 依然是错的。
+
+      所以判据不能只看 isfinite，必须验「内容对不对」：
+        · cos 是余弦，取值必然落在 [-1, 1]
+        · 位置 0 处 cos 恒为 1（全角度）
+      这两条对真正的 NaN、有限垃圾、全零，三种情况一视同仁。
     """
     cfg = make_run_config("debug", vocab_size=64)
     cfg.model.sequence_len, cfg.model.n_embd = 32, 32
@@ -591,9 +606,32 @@ def test_meta_device_weights_are_all_finite():
     cfg.model.head_dim = 16
     model = build_model(cfg.model, device="cpu")
 
-    # RoPE 表必须是有限值（不是 meta 垃圾）
+    # (1) 有限值（挡第一种情况：全新 CPU 分配的 NaN）
     assert torch.isfinite(model.cos).all(), "cos 表含 NaN/Inf -> 没在 init_weights 重算"
     assert torch.isfinite(model.sin).all(), "sin 表含 NaN/Inf -> 没在 init_weights 重算"
+
+    # (2) 内容正确 —— 这两条才真正抓得住「有限垃圾」和「全零」
+    #     位置 0 的旋转角恒为 0，所以 cos(0)=1、sin(0)=0，一个字不差。
+    #     注意索引：cos 形状是 (1, rotary_seq_len, 1, head_dim/2)，
+    #     所以「位置 0」是 cos[0, 0]（第 0 维是 broadcast 的 batch/head）。
+    assert model.cos[0, 0].eq(1.0).all(), (
+        f"cos(位置0) 应恒为 1，实测 min={model.cos[0, 0].min():.4g} "
+        f"max={model.cos[0, 0].max():.4g} -> 表是垃圾内存")
+    assert model.sin[0, 0].eq(0.0).all(), (
+        f"sin(位置0) 应恒为 0，实测 min={model.sin[0, 0].min():.4g} "
+        f"max={model.sin[0, 0].max():.4g} -> 表是垃圾内存")
+
+    # (3) 取值范围：余弦不可能越界。这一条挡「有限但离谱」的垃圾
+    #     （实测见过 4.4e+35），(2) 抓不到的那种。
+    for name, tbl in (("cos", model.cos), ("sin", model.sin)):
+        assert tbl.abs().max() <= 1.0, (
+            f"{name} 是三角函数值，不可能 >1，实测 max={tbl.abs().max():.4g}")
+
+    # (4) 表必须覆盖 rotary_seq_len 且不是全零（全零表会被 (2) 抓到，
+    #     这里只确认长度对得上）
+    assert model.cos.shape[1] == model.rotary_seq_len, \
+        f"RoPE 表长度 {model.cos.shape[1]} != rotary_seq_len {model.rotary_seq_len}"
+
     # 所有参数也必须有限
     bad = [n for n, p in model.named_parameters() if not torch.isfinite(p).all()]
     assert not bad, f"这些参数含 NaN/Inf: {bad}"

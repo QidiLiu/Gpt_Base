@@ -10,6 +10,7 @@
 
 import pytest
 import torch
+from pathlib import Path
 
 from common.config import make_run_config, build_model_config
 from model.layers import (
@@ -750,6 +751,226 @@ def test_value_embeds_live_on_alternate_layers():
     model(torch.randint(0, 64, (1, 32)), torch.randint(0, 64, (1, 32))).backward()
     emb = model.value_embeds[str(n - 1)]
     assert emb.weight.grad is not None, "value_embeds 权重没有梯度"
+
+
+def test_embedding_tables_are_stored_in_compute_dtype():
+    """
+    ch18「嵌入类参数降到 COMPUTE_DTYPE」的判据。
+
+    wte / 每张 value_embeds / lm_head 这三类占了 full 档 50.9% 的
+    参数量，全留 fp32 要多花 0.98 GiB（16 GB 卡的 6%）。nanochat 在
+    init_weights 末尾把它们转成 COMPUTE_DTYPE，本项目照做。
+
+    ⚠ 为什么矩阵参数不能这么转：Muon 要做 Newton-Schulz 正交化，
+      那是大矩阵上的连续乘法，bf16 的 8 位尾数会让正交性直接崩。
+      所以下面的断言反过来检查「矩阵参数仍然是 fp32」。
+
+    ⚠ 为什么 fp16 是例外：GradScaler 要用 fp32 梯度 unscale_ loss，
+      fp16 梯度会溢出。本项目 COMPUTE_DTYPE 恒为 bf16，但代码保留了
+      这个分支，判据也一并覆盖。
+    """
+    from common import COMPUTE_DTYPE
+    assert COMPUTE_DTYPE == torch.bfloat16, \
+        f"本判据按 bf16 写的，COMPUTE_DTYPE 变成了 {COMPUTE_DTYPE}"
+
+    model = _tiny_all_tricks_model()
+
+    # (1) 三类必须都是 bf16
+    tables = {"wte": model.transformer.wte.weight,
+              "lm_head": model.lm_head.weight}
+    for k, p in model.value_embeds.items():
+        tables[f"value_embeds[{k}]"] = p.weight
+    for name, p in tables.items():
+        assert p.dtype == COMPUTE_DTYPE, \
+            f"{name} 是 {p.dtype}，应该是 {COMPUTE_DTYPE} -> 没在 init_weights 里降精度"
+
+    # (2) 矩阵参数必须**保持** fp32 —— 这是 bf16 转换不该波及的部分。
+    #     如果这里也变成 bf16，说明转换写得太宽（把 model.to() 用了）。
+    for name, p in model.named_parameters():
+        is_mat = p.ndim == 2 and ("transformer.h" in name)
+        if is_mat:
+            assert p.dtype == torch.float32, \
+                f"矩阵参数 {name} 被降成了 {p.dtype} -> Muon 正交化会失效"
+
+    # (3) 转换不能吃掉数值：bf16 只有 8 位尾数，但初始化值不该变成 0。
+    assert model.transformer.wte.weight.abs().max() > 0, "wte 转 bf16 后全 0"
+    assert model.lm_head.weight.abs().max() > 0, "lm_head 转 bf16 后全 0"
+
+    # (4) bf16 参数照样能训练：loss 有限，且梯度非 None。
+    x = torch.randint(0, 64, (1, 32))
+    loss = model(x, x)
+    assert torch.isfinite(loss), f"bf16 嵌入下 loss 非有限: {loss}"
+    loss.backward()
+    assert model.transformer.wte.weight.grad is not None, "wte 没收到梯度"
+    assert model.lm_head.weight.grad is not None, "lm_head 没收到梯度"
+
+
+def test_new_ablation_switches_actually_take_effect():
+    """
+    ch17/18/19/20 新增的四个消融开关的判据。
+
+    ★ 本项目踩过两次「开关只出现在打印字符串里」的坑：
+      ① use_rope 曾经无条件生效，于是 --no-rope 完全无效，
+         bpb 一模一样，消融表得出「RoPE 毫无影响」的错误结论
+      ② 08/13/16 章曾共用一个 -k 选择器，学习者无法知道
+         具体哪一章做完了
+
+      所以新开关必须满足：**关掉它，模型结构必须真的变**。
+      只检查「参数不存在」是不够的 —— 那只证明 if 生效了，
+      不证明 forward 真的读了它。
+    """
+    import subprocess
+    import sys as _sys
+
+    # (1) --no-smear / --no-backout：参数必须消失
+    m_off = _tiny_all_tricks_model()
+    assert hasattr(m_off, "smear_lambda"), "基准模型应该有 smear_lambda"
+    assert hasattr(m_off, "backout_lambda"), "基准模型应该有 backout_lambda"
+
+    cfg = make_run_config("debug", vocab_size=64)
+    cfg.model.sequence_len, cfg.model.n_embd = 32, 32
+    cfg.model.n_head = cfg.model.n_kv_head = 2
+    cfg.model.head_dim = 16
+    cfg.model.use_smear = False
+    cfg.model.use_backout = False
+    m_off = build_model(cfg.model, device="cpu")
+    assert not hasattr(m_off, "smear_lambda"), "--no-smear 没生效：smear_lambda 还在"
+    assert not hasattr(m_off, "smear_gate"), "--no-smear 没生效：smear_gate 还在"
+    assert not hasattr(m_off, "backout_lambda"), "--no-backout 没生效：参数还在"
+    # forward 必须仍然能跑（hasattr 分支不是唯一防线）
+    x = torch.randint(0, 64, (2, 32))
+    assert torch.isfinite(m_off(x, x)), "关掉 trick 后 loss 非有限"
+
+    # (2) --shared-value-embeds：ve 表必须从 N 张变成 1 张
+    def ve_count(model):
+        # 共享模式下 value_embeds 是裸 nn.Embedding，没有 len()；
+        # 独立模式下是 ModuleDict，长度 = 表的张数。
+        if not hasattr(model, "value_embeds"):
+            return 0
+        return 1 if isinstance(model.value_embeds, torch.nn.Embedding) \
+            else len(model.value_embeds)
+
+    n_layer = 6
+    cfg2 = make_run_config("debug", vocab_size=64)
+    cfg2.model.sequence_len, cfg2.model.n_embd = 32, 32
+    cfg2.model.n_head = cfg2.model.n_kv_head = 2
+    cfg2.model.head_dim = 16
+    cfg2.model.n_layer = n_layer
+    cfg2.model.use_value_embeds = True
+    cfg2.model.share_value_embeds = False
+    sep = build_model(cfg2.model, device="cpu")
+    n_sep = ve_count(sep)
+    n_sep_params = sum(p.numel() for p in sep.value_embeds.parameters())
+
+    cfg2.model.share_value_embeds = True
+    shr = build_model(cfg2.model, device="cpu")
+    n_shr = ve_count(shr)
+    n_shr_params = sum(p.numel() for p in shr.value_embeds.parameters())
+
+    assert n_sep == (n_layer + 1) // 2, \
+        f"独立模式下应有 {(n_layer + 1) // 2} 张表，实际 {n_sep}"
+    assert n_shr == 1, f"共享模式下应该只有 1 张表，实际 {n_shr}"
+    # 关键：参数真的少了，而且少了 (N-1) 张表的量
+    assert n_shr_params < n_sep_params, \
+        f"共享后参数应从 {n_sep_params} 降到 {n_shr_params}，实际没降"
+    per_table = n_sep_params // n_sep
+    assert n_shr_params == per_table, \
+        f"共享后应是 1 张表（{per_table} 参数），实际 {n_shr_params}"
+    # 缩小的比例：24 层 full 档下省 40%。这里用 6 层验证比例关系。
+    print(f"  独立 {n_sep} 张 / {n_sep_params} 参数；"
+          f"共享 {n_shr} 张 / {n_shr_params} 参数")
+
+    # 共享模式下 ve 必须**真的被 GPT.forward 消费**。
+    #
+    # ⚠ 这里踩过一次坑：第一版判据是「手动构造 ve 张量、调 blk.attn、
+    #   对比传/不传的差异」—— 那只测了 attention 层，**完全绕过
+    #   了 GPT.forward 的路由**。于是把 forward 里的
+    #   `ve = self.value_embeds(idx) if ... else None` 改成
+    #   硬编码 `ve = None` 之后，判据依然全绿。
+    #
+    #   正确做法是**扰动共享表本身，看端到端输出变不变**：
+    #   如果 forward 根本不读这张表，改它的权重不会有任何影响。
+    with torch.no_grad():
+        for name, prm in shr.named_parameters():
+            if "c_proj" in name:
+                prm.normal_(0.0, 0.05)
+    xb = torch.randint(0, 64, (1, 16))
+    with torch.no_grad():
+        before = shr(xb, xb).clone()
+        # 把整张共享表加一个大常数：只有 forward 真读了它，输出才会变
+        shr.value_embeds.weight.add_(3.0)
+        after = shr(xb, xb)
+    assert (before - after).abs().max() > 1e-6, \
+        "扰动共享表后端到端输出完全不变 -> GPT.forward 没有消费共享表"
+
+    # 独立模式同样要过一遍（回归保护：别把这条判据只做在共享模式上）
+    with torch.no_grad():
+        for name, prm in sep.named_parameters():
+            if "c_proj" in name:
+                prm.normal_(0.0, 0.05)
+    with torch.no_grad():
+        b0 = sep(xb, xb).clone()
+        sep.value_embeds[str(n_layer - 1)].weight.add_(3.0)
+        a0 = sep(xb, xb)
+    assert (b0 - a0).abs().max() > 1e-6, \
+        "扰动独立表后端到端输出完全不变 -> GPT.forward 没有消费它"
+
+    # (3) CLI 必须真的把 config 改掉。
+    #
+    # ⚠⚠ 这里也踩过一次坑。第一版判据只检查「开关出现在 --help 里」，
+    #   于是把 apply_overrides 里的整个 for 循环删掉（开关只注册、
+    #   不生效）之后，判据依然全绿 —— 而这正是本项目真实踩过的
+    #   use_rope 那个 bug 的形状：**开关只出现在打印字符串里**。
+    #
+    #   正确做法是**直接调 apply_overrides，看 config 有没有变**。
+    #   子进程只用来确认 parser 收到了这个 flag。
+    from training.train_base import parse_args, apply_overrides
+
+    src = Path(__file__).resolve().parents[1]
+
+    ns = parse_args(["--mode", "ablation", "--no-smear"])
+    c = make_run_config("ablation")
+    c.model.use_smear = True
+    apply_overrides(c, ns)
+    assert c.model.use_smear is False, \
+        "--no-smear 没生效：apply_overrides 没把 use_smear 改回 False"
+
+    for flag, attr in [("--no-backout", "use_backout"),
+                       ("--no-value-embeds", "use_value_embeds"),
+                       ("--no-resid-lambdas", "use_resid_lambdas"),
+                       ("--no-x0-lambdas", "use_x0_lambdas")]:
+        ns = parse_args(["--mode", "ablation", flag])
+        c = make_run_config("ablation")
+        setattr(c.model, attr, True)
+        apply_overrides(c, ns)
+        assert getattr(c.model, attr) is False, \
+            f"{flag} 没生效：{attr} 仍为 True"
+
+    ns = parse_args(["--mode", "ablation", "--shared-value-embeds"])
+    c = make_run_config("ablation")
+    c.model.share_value_embeds = False
+    apply_overrides(c, ns)
+    assert c.model.share_value_embeds is True, \
+        "--shared-value-embeds 没生效"
+
+    # (4) --all-tricks 与 --no-xxx 的优先级：先开再关，所以 no 赢。
+    #     顺序写反的话「开全部再关一个」会变成「全部开着」——静默失效。
+    ns = parse_args(["--mode", "ablation", "--all-tricks", "--no-smear"])
+    c = make_run_config("ablation")
+    apply_overrides(c, ns)
+    assert c.model.use_resid_lambdas is True, "--all-tricks 没生效"
+    assert c.model.use_smear is False, \
+        "--all-tricks --no-smear 里 no 没赢 -> apply_overrides 的顺序错了"
+
+    # (5) 子进程确认 parser 真收到了这些 flag（防止 parse_args 拼错名字）
+    r = subprocess.run(
+        [_sys.executable, "-m", "training.train_base", "--help"],
+        capture_output=True, text=True, cwd=src, timeout=180)
+    assert r.returncode == 0, f"--help 失败: {r.stderr[-300:]}"
+    for flag in ("--no-smear", "--no-backout", "--shared-value-embeds",
+                 "--no-value-embeds", "--no-resid-lambdas", "--no-x0-lambdas"):
+        assert flag in r.stdout, \
+            f"{flag} 没出现在 --help 里 -> parser 没注册"
 
 
 def test_smear_mixes_previous_embedding():

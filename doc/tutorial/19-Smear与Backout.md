@@ -1,7 +1,7 @@
 # 19 · Smear 与 Backout
 
 上一章的 trick 加了 1.5 亿参数，占 43.6%。
-本章两个 trick 加起来是 **50 个参数**，占 0.000015%。
+本章两个 trick 加起来是 **26 个参数**，占 0.0000075%。
 
 而且其中有一个**做减法** —— 前四个 trick 全都在往上加，
 只有它在往下减。
@@ -391,16 +391,21 @@ for k, v in items:
 实测：
 
 ```
-  resid_lambdas          24   0.00%
-  x0_lambdas             24   0.00%
-  value_embeds  150,994,944  43.64%
-  smear_lambda            1   0.00%
-  backout_lambda          1   0.00%
-  smear_gate             24   0.00%
+  resid_lambdas          24   0.000007%
+  x0_lambdas             24   0.000007%
+  value_embeds  150,994,944  43.636833%
+  smear_lambda            1   0.0000003%
+  backout_lambda          1   0.0000003%
+  smear_gate             24   0.000007%
 ```
 
 **本章两个 trick 一共 26 个参数**（`smear_lambda` 1 + `backout_lambda` 1
 + `smear_gate` 24），占 `full` 档的 0.0000075%。
+
+> 顺带看 `value_embeds` 的 43.64% 里有多少是门控？
+> `ve_gate` 是 `12×12=144` 参数 × 12 层 = **1728**。
+> 也就是说那 1.5 亿里 **99.9989% 是查表，只有 0.0011% 是门控。**
+> **ve 的「聪明」几乎全在表里，门控只是个能学出条件的开关。**
 
 ### 验证 2：smear 的三个分支行为一致
 
@@ -557,21 +562,38 @@ def broken(self, x, kv_cache):
 bash script/train_base.sh full --no-resume --model-tag full_sb
 
 # 关 smear
-bash script/train_base.sh full --no-resume --model-tag full_nosmear
+bash script/train_base.sh full --no-resume --model-tag full_nosmear --no-smear
 
 # 关 backout
-bash script/train_base.sh full --no-resume --model-tag full_nobackout
+bash script/train_base.sh full --no-resume --model-tag full_nobackout --no-backout
 
 bash scratch/ablation.sh full_sb
 ```
 
-**⚠ 本项目没有 `--no-smear` / `--no-backout` CLI 开关。**
-想测得改 `PRESETS` 里 `full` 那一档的 `use_smear` / `use_backout`。
+**这两个开关是本章写作时补上的。** 原来只有 `--use-smear` /
+`--use-backout`（打开），没有关闭的入口 —— 而 `full` 档默认
+**开着**这两个 trick，于是「消融默认组合里的 trick」这件事
+根本没法从命令行做，只能去改 `PRESETS`。
 
-> 这和第 12 章的 `n_kv_head` 情况一样：**不暴露用不上的开关**。
-> 但这两个 trick 是**默认开着**的（与 GQA 相反），
-> 所以不暴露开关反而让消融更麻烦 —— 这是个真实的教学取舍问题，
-> 我倾向于承认「这里应该给个开关」。
+**这是一个真实的缺陷，不是「有意的教学噪音」。** 第 12 章我把
+不给 `--n-kv-head` 开关辩护为「减少教学噪音」，那站得住 ——
+因为 GQA 在本项目默认关闭，一个用不上的开关只会增加噪音。
+但**默认在用的东西不给关闭开关，是纯粹的缺漏**。
+
+现在补齐了 5 个关闭开关：
+
+```
+--no-resid-lambdas   --no-x0-lambdas   --no-value-embeds
+--no-smear           --no-backout
+```
+
+加上 `--shared-value-embeds`（第 18 章）。
+
+> ⚠ **开关的优先级有讲究**：`apply_overrides` 里**先处理 `--use-xxx`
+> 再处理 `--no-xxx`**，所以 `--all-tricks --no-smear` 的含义是
+> 「开全部，除了 smear」。顺序反过来写的话 `--all-tricks` 会
+> 覆盖掉 `--no-smear` —— 一个静默失效的消融。
+> `tests/test_core.py` 里有判据专门锁这个顺序。
 
 **预期（诚实版）**：这两个 trick 的效应在 `full` 档上
 很可能落在 bpb 噪声内（26 个参数能做的事很有限）。
@@ -693,10 +715,37 @@ LayerDrop 是**随机性正则**。前者更可控，后者更强。
 - **参数成本和影响力完全不成正比。** 26 个参数的 smear
   和 1.5 亿参数的 ve 在设计上是同等重要的。
 - **但也不能说「参数不重要」** —— ve 的 1.5 亿参数是实打实的
-  显存和通信开销（第 18 章的 40% 节省空间就来自它）。
+  显存和通信开销。第 18 章的两个改动都作用在它身上：
+  `--shared-value-embeds`（省 40% 参数）和 bf16 转换（省 0.98 GiB）
 - **四个加、一个减**，构成残差流的完整动力学。
 
----
+**五个 trick 的参数预算**（`full` 档实测）：
+
+| trick | 参数 | 占 full | 初始值 | 方向 | CLI 关闭开关 |
+|---|---|---|---|---|---|
+| `resid_lambdas` | 24 | 0.000007% | 1.15→1.05 | × 放大 | `--no-resid-lambdas` |
+| `x0_lambdas` | 24 | 0.000007% | 0.20→0.05 | + 加回起点 | `--no-x0-lambdas` |
+| `value_embeds` | 150,994,944 | **43.64%** | Uniform | + 加身份 | `--no-value-embeds` |
+| `smear` | 25 | 0.000007% | λ=0 | + 加前词 | `--no-smear` |
+| `backout` | 1 | 0.0000003% | 0.2 | **− 减中层** | `--no-backout` |
+
+另外两个改动：
+
+| 改动 | CLI | 省 |
+|---|---|---|
+| ve 表共享 | `--shared-value-embeds` | 138,412,032 参数（40%） |
+| 嵌入类降 bf16 | 默认开 | 约 0.98 GiB（`full` 估算） |
+
+**这张表本身就是卷 3 的结论**：
+
+- **参数成本和影响力完全不成正比。**
+- **但参数显存是真实的** —— 43.6% 的参数决定了
+  「同样的显存能训多大的 transformer 本体」
+- **四个加、一个减**，加上「共享」和「降精度」两个工程开关，
+  构成 nanochat 这套架构的全部可调项
+
+（这张表里的 `value_embeds` 是 43.64%，但其中绝大部分是**嵌入表本身**，
+不是门控。门控只占 `12 × 12 × 12 = 1728` 个参数。）
 
 ## 卷 3 最后一个 trick
 

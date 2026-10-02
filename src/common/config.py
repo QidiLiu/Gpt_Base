@@ -74,6 +74,12 @@ class ModelConfig:
     use_smear: bool = False            # 混入前一 token 的嵌入
     use_backout: bool = False          # 末层前减去中层残差
 
+    # ---- value_embeds 的表结构（消融开关，见 tutorial/18）----
+    # False = 每个有 ve 的层一张独立表（nanochat 的做法）
+    # True  = 所有层共享一张表
+    # full 档下差 40% 的总参数量（12 张 -> 1 张，138,412,032 个参数）。
+    share_value_embeds: bool = False
+
     # 词表按 64 对齐（DDP 张量对齐 / tensor core 效率），forward 时再切回来
     pad_vocab_size_to: int = 64
 

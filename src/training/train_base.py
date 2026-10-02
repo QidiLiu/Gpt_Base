@@ -47,7 +47,13 @@ from common.checkpoint import save_checkpoint, load_checkpoint, find_latest
 # ===========================================================================
 # 命令行
 # ===========================================================================
-def parse_args():
+def parse_args(argv=None):
+    """
+    ⚠ argv 是给测试用的。argparse 的 parse_args 本来就接受这个参数，
+      这里只是把它透传出去 —— 否则 parse_args() 只能读 sys.argv，
+      测试就得去 patch sys.argv（能work，但脆：会污染同进程里
+      其他读 argv 的代码，比如 torch.distributed 的 launcher）。
+    """
     p = argparse.ArgumentParser(description="预训练 base 模型")
     p.add_argument("--mode", default="smoke",
                    choices=["debug", "smoke", "ablation", "full"],
@@ -74,6 +80,21 @@ def parse_args():
         ("use-smear", "开启 Smear"),
         ("use-backout", "开启 Backout"),
         ("all-tricks", "开启全部 5 个残差流 trick"),
+        # ⚠ help 里的百分号要写成 %% —— argparse 用 %-formatting 展开 help，
+    #   单个 % 后面跟非格式字符会抛 ValueError: unsupported format character。
+    #   （我写 "省 40% 参数" 时踩过）
+    # ⚠ 下面三个是「默认开」的 trick 的关闭开关。
+        #   full 档默认开 resid/x0/ve/smear/backout，所以 --use-xxx 只能
+        #   「打开」不能「关掉」—— 想消融就得改 PRESETS，很别扭。
+        #   这三个补上了缺口（--no-smear 等）。第 12 章的 --n-kv-head
+        #   同理：默认配置下用不上的开关不暴露，但**默认在用**的必须能关。
+        ("no-resid-lambdas", "关掉 resid_lambdas（full 档默认开）"),
+        ("no-x0-lambdas", "关掉 x0_lambdas（full 档默认开）"),
+        ("no-value-embeds", "关掉 Value Embeddings（full 档默认开）"),
+        ("no-smear", "关掉 Smear（full 档默认开）"),
+        ("no-backout", "关掉 Backout（full 档默认开）"),
+        ("shared-value-embeds", "ve 表在所有层共享一张（默认每层一张）"
+                                 "；full 档省 40%% 参数"),
     ]:
         p.add_argument(f"--{flag}", action="store_true", help=help_)
     # ⚠ 这是矩阵参数的 weight decay（λ_ref，缩放前）。
@@ -104,7 +125,7 @@ def parse_args():
                         "做消融实验时必须加：否则换个 tag 重跑同名实验时，"
                         "auto-resume 会把上次的存档捡起来，0 步就跑完了，"
                         "两组 bpb 会一模一样。")
-    return p.parse_args()
+    return p.parse_args(argv)
 
 
 def apply_overrides(cfg, args) -> None:
@@ -121,9 +142,17 @@ def apply_overrides(cfg, args) -> None:
     if args.all_tricks:
         m.use_resid_lambdas = m.use_x0_lambdas = True
         m.use_value_embeds = m.use_smear = m.use_backout = True
+    # ⚠ 顺序很重要：先开再关，这样 `--all-tricks --no-smear`
+    #   的含义是「开全部，除了 smear」。反过来写的话 --all-tricks
+    #   会把 --no-smear 覆盖掉 —— 一个静默失效的消融。
     for name in ("resid_lambdas", "x0_lambdas", "value_embeds", "smear", "backout"):
         if getattr(args, f"use_{name}"):
             setattr(m, f"use_{name}", True)
+    for name in ("resid_lambdas", "x0_lambdas", "value_embeds", "smear", "backout"):
+        if getattr(args, f"no_{name}"):
+            setattr(m, f"use_{name}", False)
+    if args.shared_value_embeds:
+        m.share_value_embeds = True
     if args.muon_advanced:
         cfg.optim.muon.flavor = "advanced"
     # 必须在 resolve_scaling 之前写：wd 的缩放因子依赖 B 和 D，

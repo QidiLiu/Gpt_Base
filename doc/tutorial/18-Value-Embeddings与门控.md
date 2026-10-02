@@ -242,13 +242,15 @@ self.value_embeds = nn.ModuleDict({str(i): nn.Embedding(padded_vocab_size, kv_di
 
 **nanochat 就是每层一张独立表。** 本项目一字不差地复刻了它。
 
-**但复刻不等于合理。** 这里有一个显而易见的问题：
+**但复刻不等于合理**，所以本项目加了一个开关：
 
-| 方案 | ve 参数 | 说明 |
-|---|---|---|
-| **本项目 / nanochat：12 层各一张** | 150,994,944 | 每层学自己的「token → 内容向量」映射 |
-| **12 层共享 1 张** | 12,582,912 | 所有层用同一个映射 |
-| 差 | **138,412,032** | 总参数的 **40.0%** |
+| 方案 | CLI | ve 参数 | 总参数 |
+|---|---|---|---|
+| **每层独立（nanochat）** | 默认 | 150,994,944 | 346,031,882 |
+| **全层共享一张** | `--shared-value-embeds` | 12,582,912 | **207,619,850** |
+| 差 | | **138,412,032** | **-40.0%** |
+
+（`full` 档实测，两个数都是真建模型数出来的。）
 
 12 张表意味着：**每个 token 要学 12 个不同的向量**（每层一个），
 而它们全部在描述「这个 token 是谁」这件事。
@@ -261,10 +263,52 @@ self.value_embeds = nn.ModuleDict({str(i): nn.Embedding(padded_vocab_size, kv_di
 **我倾向共享**（省 40% 参数），但这是**没有实测的判断** ——
 也可能 nanochat 实测过共享会掉点，代价就是现在这样。
 
-> ⚠ 本项目**没有** `--shared-value-embeds` 开关。
-> 想测得改 `__init__` 里那个 dict comprehension。
-> 这是第 20 章那种「有意的教学噪音」还是「缺一个开关」，
-> 我认为是后者 —— 但 40% 的参数差值得单独做一次消融。
+### 开关的实现：一个刻意的类型分叉
+
+共享时 `self.value_embeds` 是**裸的 `nn.Embedding`**，
+独立时是 `nn.ModuleDict`。所以有 4 处要分开：
+
+```python
+# __init__
+if cfg.share_value_embeds:
+    self.value_embeds = nn.Embedding(padded, kv_dim, device=device)
+else:
+    self.value_embeds = nn.ModuleDict({...})
+
+# init_weights（初始化）
+if cfg.share_value_embeds:
+    torch.nn.init.uniform_(self.value_embeds.weight, -s, s)
+else:
+    for ve in self.value_embeds.values():
+        torch.nn.init.uniform_(ve.weight, -s, s)
+
+# init_weights 末尾（降 bf16）
+if isinstance(self.value_embeds, nn.Embedding):
+    self.value_embeds.to(dtype=COMPUTE_DTYPE)
+else:
+    for ve in self.value_embeds.values():
+        ve.to(dtype=COMPUTE_DTYPE)
+
+# forward（取值）
+if isinstance(self.value_embeds, nn.Embedding):
+    ve = (self.value_embeds(idx).to(x.dtype)
+          if has_value_embed(i, cfg.n_layer) else None)
+else:
+    ve = (self.value_embeds[str(i)](idx).to(x.dtype)
+          if str(i) in self.value_embeds else None)
+```
+
+**用 `isinstance` 而不是 `hasattr(self.value_embeds, "values")`** ——
+后者能跑（`ModuleDict` 有 `values()`，`nn.Embedding` 没有），
+但意图不清晰，读者得先知道这个巧合。
+
+> ⚠ **注意共享模式下 forward 里多了一个 `has_value_embed` 判断。**
+> 共享表对所有层都存在，但仍然**只喂给「该有 ve」的层** ——
+> `ve_gate` 只建在那 50% 的 block 上（见下面的手抄代码）。
+> 如果漏了这个判断，所有层都会收到 `ve`，但只有一半的层会消费它，
+> 另一半层的 `ve` 参数收不到梯度 —— 而
+> `setup_optimizer` 的完整性断言**不会**抓到（参数都被分组了）。
+
 
 ### 顺带：优化器分组也不一样
 
@@ -548,8 +592,8 @@ print("（c_proj 初始为 0，所以差异应该是 0 —— 需要先打破恒
 # 基线（ve 开）
 bash script/train_base.sh full --no-resume --model-tag full_ve
 
-# 关掉
-bash script/train_base.sh full --no-resume --model-tag full_nove
+# 关掉（有现成开关：--no-value-embeds）
+bash script/train_base.sh full --no-resume --model-tag full_nove --no-value-embeds
 
 bash scratch/ablation.sh full_ve
 ```
@@ -571,30 +615,28 @@ bash scratch/ablation.sh full_ve
 
 ### 消融 2：★ 共享 vs 独立（本章最值得做的那个）
 
-```python
-# 改 GPT.__init__ 里的 dict comprehension
-self.value_embeds = nn.ModuleDict({
-    str(i): nn.Embedding(padded, kv_dim, device=device)
-    for i in range(cfg.n_layer) if has_value_embed(i, cfg.n_layer)
-})
-# ↓ 换成共享单表
-if cfg.use_value_embeds:
-    self._ve_shared = nn.Embedding(padded, kv_dim, device=device)
+**有现成开关**：
+
+```bash
+# 每层一张（默认，nanochat 的做法）
+bash script/train_base.sh full --no-resume --model-tag full_ve_sep
+
+# 共享一张
+bash script/train_base.sh full --no-resume --model-tag full_ve_shr --shared-value-embeds
+
+bash scratch/ablation.sh full_ve_sep
 ```
 
-forward 里对应改成：
-
-```python
-ve = (self._ve_shared(idx).to(x.dtype) if hasattr(self, "_ve_shared") else None)
-```
-
-（注意 `ve_gate` 仍然是每层一个 —— 只共享嵌入表，门控保持独立。）
-
-**预期**：bpb **持平或略好**（少了 1.38 亿参数，泛化更好），
+**预期**：共享版 bpb **持平或略好**（少了 1.38 亿参数，泛化更好），
 参数量从 346M 降到 208M（**-40%**）。
 
 **这个消融的价值远超 bpb 本身** —— 如果成立，
 `full` 档就能在同预算下训更大的 transformer 本体。
+
+> ⚠⚠ `full` 档一次 41 小时，两个配置 82 小时。
+> **本项目没跑过这个消融**，上面是预期不是实测。
+> 但它是卷 3 里唯一一个「可能改变 full 档整体配置」的消融，
+> 值得单独排时间做。
 
 ### 消融 3：ve_gate 的通道数
 
@@ -653,6 +695,134 @@ self.ve_gate_channels = 12    # 改成 64 / 256 看 bpb
 > `num_params()`（346M）做 scaling 计算是对的 ——
 > 嵌入表是查表，没有矩阵乘 FLOPs。
 > **但显存和通信成本是按 346M 算的。**
+
+---
+
+## ★ 一个显存优化：嵌入类降到 bf16
+
+本章的三类参数（`wte` + 每张 `ve` + `lm_head`）占了 `full` 档的
+**50.9%**。它们全是 fp32，而 nanochat 在 `init_weights` 末尾
+把它们转成 `COMPUTE_DTYPE`（bf16）。**本项目现在也这么做。**
+
+### 为什么这三类可以降精度
+
+```python
+# init_weights 末尾
+if COMPUTE_DTYPE != torch.float16:
+    self.transformer.wte.to(dtype=COMPUTE_DTYPE)
+    self.lm_head.to(dtype=COMPUTE_DTYPE)
+    if hasattr(self, "value_embeds"):
+        if isinstance(self.value_embeds, nn.Embedding):
+            self.value_embeds.to(dtype=COMPUTE_DTYPE)
+        else:
+            for ve in self.value_embeds.values():
+                ve.to(dtype=COMPUTE_DTYPE)
+```
+
+三个理由：
+
+| 理由 | 说明 |
+|---|---|
+| **没有矩阵乘 FLOPs** | `num_matmul_params()` 不统计它们（第 16 章）。它们是查表，所以精度不影响「训练速度」这个口径 |
+| **前向不累积** | 查表的舍入误差不会像深层矩阵乘那样一层层放大 |
+| **优化器内部转 fp32** | `adamw_step` 第 85 行 `p32, g32 = p.float(), grad.float()`，**整段计算都在 fp32**，只有最后写回是 bf16 |
+
+第三点是关键。`adamw_step` 的 docstring 里原本就写着
+
+> 「我们把 wte / value_embeds 直接存成 COMPUTE_DTYPE（bf16）省显存。
+> 但 bf16 只有 8 位尾数，算 `1 - beta2`（beta2=0.999 时等于 0.001）
+> 会直接下溢成 0，动量就再也不衰减了。所以中途必须转 fp32。」
+
+**这段注释描述的行为 `init_weights` 从来没实现过。**
+现在实现了 —— 优化器的代码一直是对的，只是没人把参数喂成 bf16。
+
+### ⚠ 为什么矩阵参数**不能**这么转
+
+**Muon 要做 Newton-Schulz 正交化**（第 23 章）：那是大矩阵上的
+连续乘法（5 步 `X ← 1.5X − 0.5X(XᵀX)`），bf16 的 8 位尾数会让
+正交性直接崩掉。
+
+所以转换必须**只点名那三类**，不能用 `self.to(dtype=...)` ——
+那会把矩阵参数一起降级。
+
+`tests/test_core.py` 里有一个判据专门盯这件事（见下面的验证 1）。
+
+### ⚠ 为什么 fp16 是例外
+
+`GradScaler` 需要用 fp32 梯度 `unscale_` loss。fp16 的梯度
+容易上溢/下溢，`unscale_` 会失效。所以 nanochat 和本项目都
+保留了 fp32 嵌入。`COMPUTE_DTYPE` 恒为 bf16，这个分支是保险。
+
+### 实测省了多少
+
+**估算（`full` 档）**：嵌入类 176,160,768 个参数，从 fp32 降到 bf16：
+
+```
+参数本身        176,160,768 × 2 B = 336 MiB
+AdamW 两个状态  176,160,768 × 2 × 2 B = 672 MiB
+                              合计 ≈ 0.98 GiB
+```
+
+（16 GB 卡的 6%。）
+
+**实测（`ablation` 档，含全部 5 个 trick，dbs=8，跑 6 步）**：
+
+```
+                 嵌入类 bf16   参数总数     峰值 GiB
+ablation bf16    31,457,280   42,074,366     3.017   ← 省 188 MiB
+ablation fp32            0   42,074,366     3.200
+占比              74.8%
+```
+
+**注意参数量没变**（42,074,366 两边一样）—— 省的是**每个参数
+占几个字节**，不是参数个数。
+
+> 为什么 `ablation` 档的 bf16 占比（74.8%）比 `full` 档（50.9%）高？
+> 因为 `ablation` 档 transformer 本体小得多（d6 vs d24），
+> 而嵌入类的绝对大小一样（`V×D` 随 `n_embd` 线性，`D=384` vs `768`）。
+> **d6 上 12 张 ve 表就已经占了大半** —— 这从另一个角度印证了
+> 本章开头那个 43.6% 不是 full 档的特例。
+
+### 验证 1：判据必须同时检查「转了」和「没转太多」
+
+```bash
+uv run pytest tests/test_core.py -k compute_dtype -v
+```
+
+这个判据有四条断言，我用**两路故障注入**验证过它抓得住：
+
+```python
+# 注入 1：把整段转换删掉
+if False: pass
+#   -> 红：wte 是 fp32 不是 bf16
+
+# 注入 2：转换写得太宽
+self.to(dtype=COMPUTE_DTYPE)      # ★ 把矩阵参数也降了
+#   -> 红：「矩阵参数 transformer.h.0.attn.c_q.weight 被降成了
+#          torch.bfloat16 -> Muon 正交化会失效」
+```
+
+**注入 2 是这个判据存在的全部理由。** 一个只检查「嵌入类是 bf16」
+的判据会完全放行注入 2 —— 而那正是会让 Muon 静默失效的 bug。
+
+### ⚠ 这个改动的代价（诚实地说明）
+
+bf16 的 8 位尾数意味着**参数更新本身是粗粒度的**。
+AdamW 的单步更新量 `lr ≈ 0.3 × 1/√768 ≈ 0.011`，而一个典型
+嵌入权重的量级是 `~1`。相对更新量约 1% —— **远大于 bf16 的
+相对精度（约 0.4%）**，所以单步更新不会完全丢失。
+
+但如果学习率调得更小，或者某个 token 的嵌入长期不被更新，
+bf16 的分辨率会成为下限。
+
+**nanochat 明确接受了这个代价**（「optimizer can tolerate
+reduced-precision embeddings」）。本项目跟随，但你要知道
+**这是一个取舍，不是一个纯粹的免费午餐**。
+
+**本项目的验证范围**：只测了「loss 有限、梯度非 None、
+参数没变成 0/NaN」（`smoke` 和 `ablation` 两档各 40 步）。
+**没有测过「bf16 嵌入 vs fp32 嵌入的最终 bpb 差异」** ——
+那需要完整训练，属卷 5 之后才能做的事。
 
 ---
 

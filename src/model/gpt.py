@@ -61,12 +61,28 @@ class GPT(nn.Module):
         if cfg.use_backout:
             self.backout_lambda = nn.Parameter(0.2 * torch.ones(1, device=device))
         # Value Embeddings：给隔层 + 末层的 attention 额外提供 token 身份信息
+        #
+        # ⚠ 表结构有两种，差别大到必须显式选择：
+        #   share_value_embeds=False（nanochat 的做法）
+        #     每个有 ve 的层一张独立表。full 档 = 12 张 × 16384 × 768
+        #     = 150,994,944 参数，占模型 43.6%。
+        #   share_value_embeds=True
+        #     所有层共享一张。full 档 = 12,582,912 参数，省 40% 总参数。
+        #
+        # 为什么这里不能用 ModuleDict 统一处理：共享时它根本不是 dict，
+        # 是一个裸的 nn.Embedding。所以 forward 里两条路径的取法不同
+        # （self.value_embeds[idx] vs self.value_embeds[str(i)]）。
+        # 这是刻意的 —— 强行统一会让 forward 多一个分支，
+        # 而分支越多越容易在「开关只出现在打印里」这类 bug 上翻车。
         if cfg.use_value_embeds:
             kv_dim = cfg.n_kv_head * cfg.head_dim
-            self.value_embeds = nn.ModuleDict({
-                str(i): nn.Embedding(padded, kv_dim, device=device)
-                for i in range(cfg.n_layer) if has_value_embed(i, cfg.n_layer)
-            })
+            if cfg.share_value_embeds:
+                self.value_embeds = nn.Embedding(padded, kv_dim, device=device)
+            else:
+                self.value_embeds = nn.ModuleDict({
+                    str(i): nn.Embedding(padded, kv_dim, device=device)
+                    for i in range(cfg.n_layer) if has_value_embed(i, cfg.n_layer)
+                })
 
         # RoPE 表。超算 10 倍长度：它很小（seq×head_dim/2×2），
         # 多算一点省得以后要动态增长的麻烦。真的不够时 forward 会 assert。
@@ -128,8 +144,15 @@ class GPT(nn.Module):
         if cfg.use_backout:
             torch.nn.init.constant_(self.backout_lambda, 0.2)
         if cfg.use_value_embeds:
-            for ve in self.value_embeds.values():
-                torch.nn.init.uniform_(ve.weight, -s, s)
+            # 共享模式是裸 nn.Embedding，独立模式是 ModuleDict —— 用
+            # isinstance 分开，别写 `hasattr(self.value_embeds, "values")`
+            # 这种隐式判断（ModuleDict 有 values()，nn.Embedding 没有；
+            # 虽然能跑，但意图不清晰）。
+            if cfg.share_value_embeds:
+                torch.nn.init.uniform_(self.value_embeds.weight, -s, s)
+            else:
+                for ve in self.value_embeds.values():
+                    torch.nn.init.uniform_(ve.weight, -s, s)
             for block in self.transformer.h:
                 if block.attn.ve_gate is not None:
                     torch.nn.init.uniform_(block.attn.ve_gate.weight, 0.0, 0.02)
@@ -148,6 +171,37 @@ class GPT(nn.Module):
             self.rotary_seq_len, cfg.head_dim, base=cfg.rope_base,
             device=self.get_device(), dtype=COMPUTE_DTYPE)
         self.cos, self.sin = cos, sin
+
+        # ── 把「查表类」参数降到 COMPUTE_DTYPE 省显存 ─────────────
+        # 嵌入类参数（wte + 每张 value_embeds + lm_head）占了 full 档
+        # 50.9% 的参数量（176M / 346M），全部留 fp32 的话光这三类就
+        # 多占 0.98 GiB（参数本身 336 MiB + AdamW 两个 fp32 状态 672 MiB）。
+        # 16 GB 卡上这 6% 是实打实的余量。
+        #
+        # 为什么这三类可以安全地降精度，而矩阵参数不行：
+        #   · 它们没有矩阵乘的 FLOPs（第 16 章的 num_matmul_params 不算它们），
+        #     所以精度损失不影响 speed of training 的口径
+        #   · 前向是「查表 / 一次 matmul」，bf16 的舍入误差不会累积
+        #   · 反向的梯度累积到 bf16 参数上，但 adamw_step 内部
+        #     全程转 fp32 计算（第 85 行 p32/g32/m32/v32），
+        #     只有写回那一步是 bf16 —— 这正是我们要省的
+        #
+        # ⚠ 矩阵参数（Muon 接管的那些）**不能**这么干：
+        #   Muon 要做正交化（Newton-Schulz），那是大矩阵上的
+        #   连续乘法，bf16 的 8 位尾数会让正交性直接崩掉。
+        #
+        # ⚠ fp16 是例外：GradScaler 需要用 fp32 梯度反缩放 loss，
+        #   fp16 的梯度下溢/上溢会让 unscale_ 失效。nanochat 和
+        #   本项目都为此保留 fp32 嵌入。
+        if COMPUTE_DTYPE != torch.float16:
+            self.transformer.wte.to(dtype=COMPUTE_DTYPE)
+            self.lm_head.to(dtype=COMPUTE_DTYPE)
+            if hasattr(self, "value_embeds"):
+                if isinstance(self.value_embeds, nn.Embedding):
+                    self.value_embeds.to(dtype=COMPUTE_DTYPE)
+                else:
+                    for ve in self.value_embeds.values():
+                        ve.to(dtype=COMPUTE_DTYPE)
 
     # =======================================================================
     # 参数统计
@@ -232,8 +286,16 @@ class GPT(nn.Module):
                 x = self.resid_lambdas[i] * x
             if hasattr(self, "x0_lambdas"):
                 x = x + self.x0_lambdas[i] * x0
-            ve = (self.value_embeds[str(i)](idx).to(x.dtype)
-                  if hasattr(self, "value_embeds") and str(i) in self.value_embeds else None)
+            if hasattr(self, "value_embeds"):
+                if isinstance(self.value_embeds, nn.Embedding):
+                    # 共享模式：所有层用同一张表（仍只喂给「该有 ve」的层）
+                    ve = (self.value_embeds(idx).to(x.dtype)
+                          if has_value_embed(i, cfg.n_layer) else None)
+                else:
+                    ve = (self.value_embeds[str(i)](idx).to(x.dtype)
+                          if str(i) in self.value_embeds else None)
+            else:
+                ve = None
             x = block(x, cos_sin, self.window_sizes[i], kv_cache, ve)
             if i == backout_layer:
                 x_backout = x

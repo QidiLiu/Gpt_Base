@@ -189,6 +189,25 @@ tokenizer → 后来 `ablation`/`full` 传 `--vocab-size 16384` 时
     -> ' the largest city in the world. It is the largest city in the world. It is ...'
 ```
 
+### SFT 也跑过了（`ablation` 档，869 步 / **1m30s**）
+
+| 指标 | 结果 |
+|---|---|
+| GSM8K pass@1 | **3.8%**（n=40 × 4 采样）|
+| MMLU / ARC-E / ARC-C（**生成式**评分）| 23.7% / 24.7% / 29.3% |
+
+**学到 vs 没学到：**
+
+| 学到 | 没学到 |
+|---|---|
+| 对话模板与 turn 边界（四轮都接上了）| 内容质量（退化重复）|
+| **工具调用协议**（`<|python_start|>12+7<|python_end|><|output_start|>19<|output_end|>` —— 结构全对）| 算术（12+7=19）|
+| 「什么时候该调工具」| 多轮上下文一致性（「And of Japan?」没接住）|
+| | 任何选择题推理 |
+
+⚠ **多选题那两列不能和基座比** —— 基座用 loglikelihood 评分、
+SFT 用生成式评分，**ARC-C 那个 +6.6 主要是评分方式变的**。
+
 **`full` 档 d24 仍是外推**（`runs/` 不入版本库，仓库里没有它的存档）。
 
 数字来源与口径：[第 06 章](doc/tutorial/06-bits-per-byte.md)，

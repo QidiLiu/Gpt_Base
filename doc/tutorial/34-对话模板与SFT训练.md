@@ -438,6 +438,21 @@ uv run pytest tests/test_data.py -k "mask or truncate or alternation" -v
 ⚠ 而兜底会打印警告 —— **如果你没看日志，就完全不知道
 有多少步是白跑的**。
 
+**实测的正确状态**（`ablation` 档 869 步）：
+
+```
+（已跳过 1 条无有效监督信号的对话）    <- 数据层过滤，N 是个位数 = 正常
+[警告] 本批没有有效的监督 token         <- ★ 0 次；有前一行在就不该出现
+```
+
+⚠ **别把这两行搞混。** 我在本文早期版本里因为只看到兜底那一行，
+就断言「代码层没有任何防护」—— **而数据层那道过滤就在
+`train_sft.py:107`**，我漏读了。
+
+> **教训**：判断「有没有防护」要**把整条路径读完**，
+> 不是只看离症状最近的那个函数。
+> 最近的函数通常是**最后一道**兜底，不是**第一道**防线。
+
 ### 坑 2：f-string 拼特殊 token
 
 见上面。**日志里完全看不出来。**
@@ -489,20 +504,139 @@ uv run pytest tests/test_data.py -k "mask or truncate or alternation" -v
 只需要 `{"messages": [{"role":..., "content":...}]}` 这个结构 ——
 所以任何 chat 格式的数据集都能用。
 
-**多轮对话的长度分布决定 NaN 率**
+### ✅ 更正：代码层**有**防护，我上一版说反了
 
-本章实测的 64% vs docstring 的 23%，差别完全来自
-「user 消息有多长 / 有多少轮」。
+⚠ **本章早期版本写着「代码层没有任何防护，只有日志里逐 batch 的警告」——
+那是错的。** 防护就在 `src/training/train_sft.py` 的 SFT dataloader 里：
 
-**这意味着 NaN 率是一个数据属性，不是代码属性** ——
-换数据集就要重新评估。而**代码层没有任何防护**
-（只有 `GPT.forward` 那个事后兜底）。
+```python
+ids, mask = tokenizer.render_conversation(ex, max_tokens=seq_len,
+                                          truncate="left")
+# 防御：即使 truncate="left"，仍要确认至少有一个有效 target
+if not any(mask[1:]):
+    skipped += 1
+    if skipped % 200 == 1:
+        log0(f"  （已跳过 {skipped} 条无有效监督信号的对话）")
+    continue
+```
 
-**更彻底的做法**：在 `render_conversation` 里就检测
-「截断后 mask 全 0」并**直接丢弃这条样本**，
-或者至少**记一个计数器**。
+**它在数据层就把这类样本丢掉了**，所以它们**根本到不了 `GPT.forward`** ——
+那个「`loss = logits.sum() * 0.0`」的事后兜底在 SFT 路径上**一次都不会触发**。
 
-⚠ 本项目**没有**这个检测。**只有日志里逐 batch 的警告。**
+### 2026-10 实测：`ablation` 档完整 SFT（869 步，1m30s）
+
+```
+数据       SmolTalk×1 + MMLU×3 + GSM8K×4
+基座       d6 d384 h6 T1024 V16384
+继承       device_batch_size=8（基座 16 的一半），seq_len=1024
+跳过       （已跳过 1 条无有效监督信号的对话）
+NaN 警告   0 次   ← 兜底一次都没触发
+```
+
+**只跳过 1 条。** 因为 `truncate="left"` 已经保住了对话结尾，
+剩下的漏网之鱼只有「整段对话短到只剩 user 消息」这种极端情况。
+
+> **所以「23%」这个数字的正确读法是**：
+> 它是**用错 `truncate`（`"right"`）时**会踩中的比例，
+> **不是数据本身的属性**。用对了就几乎为 0。
+>
+> 我上一版把它当成「数据属性，换数据集就要重新评估」——
+> **这个推论建立在「代码没防护」的错误前提上，所以也是错的。**
+
+### 三层防护的实际分工
+
+| 层 | 位置 | 作用 |
+|---|---|---|
+| 1. **用对 `truncate`** | `train_sft.py:102` | 根因修复。`"left"` 保住对话结尾 |
+| 2. **数据层跳过** | `train_sft.py:107` | 漏网之鱼直接 `continue`，不进 batch |
+| 3. **事后兜底** | `gpt.py`（NaN → 0） | 万一还有（自定义 dataloader / 预训练路径）|
+
+⚠ **第 3 层在 SFT 路径上是死代码** —— 有第 2 层在，它永远不触发。
+**但不能因此删掉它**：预训练路径不走 SFT 的 dataloader，
+而那里的 target 全是有效 token（一旦不是，那是别处的 bug）。
+
+**这三层的关系是「根因 → 兜底 → 跨路径保险」，
+不是三份重复。** 我上一版以为只有第 3 层，所以以为整个防线很薄。
+
+---
+
+## ★ 实测：SFT 到底学到了什么（2026-10，`ablation` 档）
+
+完整跑一遍 `bash script/train_sft.sh ablation`：**869 步 / 1m30s**
+（基座就是上一章那次训出来的 `d6`）。
+
+### 1. 学会了工具调用协议，但算不对
+
+```
+你 > What is 12 * 7?
+模型 >  there are 12 + 7 = <|python_start|>12+7<|python_end|><|output_start|>19<|output_end|>}
+```
+
+**四个特殊 token 一个不缺、顺序完全正确** —— 这证明 loss mask 教会了
+「第 33 章那个 `token_masks` 是怎么用的」：模型知道该在 assistant 段里
+生成 `python_start … python_end … output_start … output_end` 这套结构。
+
+**而 `12+7=19` 是错的。** 格式学到了，内容没有。
+
+### 2. GSM8K pass@1 = 3.8%（n=40 × 4 采样）
+
+```
+题目: Darrell and Allen's ages are in the ratio of 7:11. If their total age now is 162...
+正确答案: 109 | 0/4 条判对
+模型输出: "12 years of now is 162 + 12 = <|python_start|>17+12<|python_end|><|output_start|>29<|output_end|>}\n**Altogether..."
+```
+
+**接近 0 但不为 0**（40×4 次采样里对了一道）。
+
+`eval_sft.sh` 自己的提示说得很准：
+
+> 小模型在这个任务上通常接近 0，别气馁 —— **看格式对不对就行**。
+
+### 3. 多选题：⚠ 换了评分方式，不能和基座直接比
+
+| | 基座（loglikelihood） | SFT（**生成式**） |
+|---|---|---|
+| MMLU test | 27.0% | 23.7% |
+| ARC-Easy | 24.0% | 24.7% |
+| ARC-Challenge | 22.7% | **29.3%** |
+
+⚠⚠ **这两列不可直接相减。** `eval_base.sh` 比的是
+「选项文本的平均 logprob」，`eval_sft.sh` 比的是
+「模型直接吐一个字母」。**ARC-Challenge 那个 +6.6 主要是评分方式变的。**
+
+三档全部 ≈ 随机（25%）。`eval_sft.sh` 的提示也说了：
+
+> 单卡小模型准确率通常接近随机（25%），**看格式对不对比看准确率更有意义**。
+
+### 4. 多轮结构学到了，内容仍是退化重复
+
+```
+你 > What is the capital of France?
+模型 > The world is a fundamental concept of the world. The world is a powerful tool...
+你 > And of Japan?
+模型 >  you've got a few people who are not just a physical but has a fundamental...
+你 > Tell me a joke.
+模型 >  we can see a bit of a few a few a few a few years old...
+你 > Make it funnier.
+模型 >  we can't see that the number of years old as we know that the number of times it is...
+```
+
+**四轮都接上了、没跑题** —— 说明对话模板和 turn 边界是学到的。
+
+**而内容是同一个句式反复。** 而且它**没意识到「And of Japan?」
+是在追问上一个话题**（答案里没有 Japan）。
+
+### 本章的结论
+
+| 学到 | 没学到 |
+|---|---|
+| 对话模板与 turn 边界 | 内容质量 |
+| 工具调用协议（4 个特殊 token + 顺序） | 算术 |
+| 「什么时候该调工具」 | 多轮上下文一致性 |
+| | 任何选择题推理 |
+
+**23M 参数 + 2 亿 token 预训练 + 869 步 SFT，就该是这个结果。**
+这不是 bug，而是「基座能力决定 SFT 上限」的一个具体例证。
 
 ---
 

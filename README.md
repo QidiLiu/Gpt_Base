@@ -158,6 +158,42 @@ tokenizer → 后来 `ablation`/`full` 传 `--vocab-size 16384` 时
 [第 37 章](doc/tutorial/37-全流程与排错.md) 与
 [第 29 章](doc/tutorial/29-训练循环.md)。
 
+## 📊 本仓库的真实测量结果（2026-10）
+
+**`ablation` 档 d6 完整训过一遍** —— 3,096 步 / 2.03 亿 token / 39m32s
+（RTX 4060 Ti 16GB）：
+
+| 量 | 实测 |
+|---|---|
+| **`val_bpb`** | **1.0615**（训练循环）/ 1.0754（`eval_base` 全验证集）|
+| 均匀分布基线 `ln(16384)/8` | 1.2130 |
+| train loss | 9.7044 → 3.3667 |
+| 峰值显存 | 5,692 MiB |
+| MFU | 13.74% |
+| MMLU / ARC-Easy / ARC-C | 27.0% / 24.0% / 22.7%（**都≈随机**）|
+| `scaling_params` | 16,908,288 |
+
+**三点值得注意**：
+
+1. **多选题≈随机不是 bug。** 基座模型没做过 SFT，不知道「要回答一个字母」，
+   而评分比的是「选项文本的平均 logprob」。23M 参数 / 2 亿 token
+   没有选择题推理能力是预期的。
+2. **`ablation` 档 MFU 只有 13.74%**（`full` 档 26.56%）—— d6 的 GEMM 太小，
+   喂不饱这张卡。**所以 `ablation` 只适合做消融，性能测试要用 `full`。**
+3. **结束时 `val_bpb` 仍在下降**（最后 96 步 −0.0015）—— 3,096 步没跑够。
+
+样本输出是连贯英文但有明显重复退化（小基座模型的典型表现）：
+
+```
+'The capital of France is'
+    -> ' the largest city in the world. It is the largest city in the world. It is ...'
+```
+
+**`full` 档 d24 仍是外推**（`runs/` 不入版本库，仓库里没有它的存档）。
+
+数字来源与口径：[第 06 章](doc/tutorial/06-bits-per-byte.md)，
+复现步骤与排错：[第 37 章](doc/tutorial/37-全流程与排错.md)。
+
 ## 项目结构
 
 ```
@@ -170,7 +206,7 @@ src/
 ├── inference/    推理引擎：KV cache + 工具调用状态机                    → 卷7
 └── evaluation/   评测：bpb / 多选 loglikelihood / pass@k               → 卷7
 script/           6 个入口脚本（train_base / eval_base / train_sft / eval_sft / chat / progress）
-doc/tutorial/     教程（7 章已写：卷0 准备 + 卷1 数据；卷 2-8 待补）
+doc/tutorial/     教程 37 章（卷0 准备 + 卷1-4 手抄 + 卷5-8 只读）
 scratch/          12 个实验脚本
 tests/            202 个测试，每章的完成判据（另加 10 个判据自检，共 212）
 ```

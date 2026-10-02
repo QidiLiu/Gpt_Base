@@ -40,7 +40,11 @@ class ModelConfig:
 
     # ---- 注意力（消融：qk_norm_scale=0.0 即关掉 QK Norm）----
     qk_norm_scale: float = 1.2    # 0.0 = 不做 QK norm
-    window_pattern: str = "L"     # "L" 全上下文 | "SSL" 滑窗平铺（滑窗需要 FA3）
+    # "L" 全上下文 | "SSL"/"SSSL" 滑窗平铺。
+    # ⚠ 别照抄 nanochat 的「滑窗需要 FA3」那句注释 —— 本项目没有 FA3
+    #   （见 preset 里的说明），滑窗走的是 flex_attention 的 block_mask
+    #   或 SDPA 的显式 mask，见 model/layers.py:attend。实测见 tutorial/20。
+    window_pattern: str = "L"
 
     # ---- 滑窗用哪条实现路径（消融开关，见 model/layers.py:attend）----
     # "flex"  用 torch.nn.attention.flex_attention —— 编译出的是 FA2 风格的

@@ -125,10 +125,10 @@ src/
 | 章 | 标题 | 核心问题 |
 |---|---|---|
 | [16](16-meta-device三步建模型.md) | **meta device 三步建模型** | 一个比 NaN 更阴的性能陷阱 |
-| 17 | resid_lambdas 与 x0_lambdas | 逐层缩放残差流 |
-| 18 | Value Embeddings 与门控 | ResFormer 做了什么 |
-| 19 | Smear 与 Backout | 两个「便宜的小把戏」 |
-| 20 | 滑动窗口注意力 | 原理，以及一个性能悬崖 |
+| [17](17-resid-lambdas与x0-lambdas.md) | resid_lambdas 与 x0_lambdas | 逐层缩放残差流 |
+| [18](18-Value-Embeddings与门控.md) | Value Embeddings 与门控 | 占 43.6% 参数的那一路 |
+| [19](19-Smear与Backout.md) | Smear 与 Backout | 26 个参数，以及唯一做减法的 trick |
+| [20](20-滑动窗口注意力.md) | 滑动窗口注意力 | 为什么在 T=1024 上省不下时间 |
 
 ### 卷 4 · 优化器（最硬核的一卷）
 | 章 | 标题 | 核心问题 |

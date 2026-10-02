@@ -84,8 +84,60 @@ bash script/chat.sh       smoke   # 交互式聊天
 >    而且会把 `opt.step()` 的耗时摊到单步上，造出「dbs=8 快 1.44×」
 >    这种假象（真实的时间分布是 fwd 33% / bwd 67% / 优化器 0.6%）。
 >
+> ⚠ **上表的测量条件没有记录在仓库里（代码 commit、GPU 时钟、
+> 是否有其他进程占用），所以无法复现或对账。**
+> 2026-10 的一次重测（`--num-iterations 13`，取 step 11-13 稳态）
+> 得到 **58.86 s/step、17,816 tok/s、9,766 MiB、MFU 27.68%**
+> —— 比上表的 dbs=8 行快 20.7%、显存少 23%。
+> **差异原因不明**（最可能是 commit `b01200b` 把
+> `wte`/`value_embeds`/`lm_head` 转了 bf16，但它只解释得掉约 176 MiB）。
+> 详见 [第 29 章](doc/tutorial/29-训练循环.md#实测full-档稳态基线)。
+>
+> **两个数并列而不是删掉旧的** —— 没有记录测量条件的数字无法对账，
+> 挑一个看起来更权威的删掉另一个才是错的。
+>
 > 默认取 8：grad_accum 只有 4 的一半（128 vs 256），CPU 侧开销摊得更薄，
 > 且 3.2 GiB 余量实测够 SFT / eval_sft 用。要更宽裕就 `--device-batch-size 4`。
+
+---
+
+## ⚠ 已知问题：预设的 `V=16384` 没有真正生效
+
+**2026-10 实测发现。** `ablation` / `full` 档实际跑的是 **V=8192**。
+
+```
+script/_common.sh:      ablation|full → VOCAB=16384      ← 本意
+script/train_base.sh:   python -m training.train_tokenizer --vocab-size 16384
+src/training/train_tokenizer.py:
+    if os.path.exists(ckpt):  log0("tokenizer 已存在，跳过训练")   ← 只判存在，不判大小
+```
+
+因果链：某次 `smoke` 运行在 `~/.cache/gpt_base/tokenizer/` 建了一个 8192 的
+tokenizer → 后来 `ablation`/`full` 传 `--vocab-size 16384` 时
+**文件已存在，被静默复用** → `train_base` 读 `get_vocab_size()` = 8192。
+
+| 量 | 预设（= 旧文档写的） | 实际跑的 |
+|---|---|---|
+| `vocab_size` | 16384 | **8192** |
+| `ln(V)` 随机基线 | 9.7041 | **9.0109** |
+| `lm_head`（d24） | 12,582,912 | **6,291,456** |
+| 12 张 ve 表（d24） | 150,994,944 | **75,497,472** |
+| `scaling_params`（d24） | 195,035,136 | **176,160,768** |
+
+**自查一行**：
+
+```bash
+uv run python -m training.train_base --mode smoke --num-iterations 1 --no-resume 2>&1 | grep 词表
+```
+
+**手动绕过**（不改代码）：`rm -rf ~/.cache/gpt_base/tokenizer` 再重跑。
+
+⚠ **本项目只记录不修** —— 修好之后 `ablation`/`full` 会真的按 V=16384 训练
+（嵌入显存翻倍），这改变这两个档位的全部训练结果，属于需要拍板的决策。
+
+根因分析、修法、以及受影响的章节清单：
+[第 37 章](doc/tutorial/37-全流程与排错.md) 与
+[第 29 章](doc/tutorial/29-训练循环.md)。
 
 ## 项目结构
 

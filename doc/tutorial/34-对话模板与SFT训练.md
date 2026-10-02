@@ -560,6 +560,138 @@ NaN 警告   0 次   ← 兜底一次都没触发
 
 ---
 
+## ★ 对话模板的三条路径，必须逐 token 一致
+
+本章前面讲的是 `render_conversation`。但仓库里**有三条**渲染路径：
+
+| 路径 | 位置 | 用途 |
+|---|---|---|
+| `tokenizer.render_conversation` | `data/tokenizer.py` | **训练**：整段对话 + loss mask |
+| `engine.render_chat_prompt` | `inference/engine.py` | **单轮推理**：system + 一个问题 |
+| `chat.render_history` | `training/chat.py` | **多轮推理**：历史 + 本轮 |
+
+**它们必须产出完全一样的 token 序列。** 不一致的话，
+模型在训练时见到的格式和推理时喂进去的格式对不上，
+而**日志里完全看不出来**（`decode(encode(x)) == x` 恒成立）。
+
+### ★ 不变量：推理 prompt == 训练序列截到 `<|assistant_start|>`
+
+```
+训练：BOS <|user_start|> u <|user_end|> <|assistant_start|> a <|assistant_end|>
+                                      └──────── 推理 prompt 到这里为止 ────────┘
+推理：BOS <|user_start|> u <|user_end|> <|assistant_start|>
+```
+
+**推理必须停在 `<|assistant_start|>`，不能停在自己编的任何地方** ——
+模型接着往下写就是 assistant 的回复。
+
+实测（`V=16384`，`<|assistant_start|>` = 16378）：
+
+```python
+import sys
+sys.path.insert(0, "src")
+from data.tokenizer import get_tokenizer
+from inference.engine import render_chat_prompt
+from training.chat import render_history
+
+tok = get_tokenizer()
+S = tok.encode_special
+A_START = S("<|assistant_start|>")[0]
+
+def upto_start(ids):
+    """训练序列截到最后一个 <|assistant_start|>（含）。"""
+    i = len(ids) - 1 - ids[::-1].index(A_START)
+    return ids[:i + 1]
+
+def train(u, a="A"):
+    return tok.render_conversation({"messages": [
+        {"role": "user", "content": u},
+        {"role": "assistant", "content": a}]}, max_tokens=1024)[0]
+
+print(upto_start(train("Q1")) == render_chat_prompt(tok, "Q1"))
+print(render_history(tok, None, [], "Q1") == render_chat_prompt(tok, "Q1"))
+print(render_history(tok, None, [("Q1", "A1")], "Q2")
+      == upto_start(tok.render_conversation({"messages": [
+          {"role": "user",      "content": "Q1"},
+          {"role": "assistant", "content": "A1"},
+          {"role": "user",      "content": "Q2"},
+          {"role": "assistant", "content": "A2"}]}, max_tokens=1024)[0]))
+```
+
+实测输出（**四条全 True**）：
+
+```
+True    训练(截到 assistant_start) Q1 == render_chat_prompt(Q1)
+True    训练(截到 assistant_start) Q2 == render_chat_prompt(Q2)
+True    render_history([], 'Q1')        == render_chat_prompt(Q1)
+True    render_history([(Q1,A1)],'Q2')  == 训练两轮的截断版
+```
+
+`Q1` 的实际序列（6 个 token）：
+
+```
+[16375, 16376, 81, 49, 16377, 16378]
+  bos    user_start  Q1   user_end  assistant_start
+```
+
+### 为什么 `render_history` 要「委托」而不是自己拼
+
+```python
+# 本轮（含 system，若历史为空则 system 归这一轮）。
+tail_system = None if history else system
+return ids + render_chat_prompt(tokenizer, user_text, tail_system)[1:]
+```
+
+**历史部分它自己拼，但本轮直接复用 `render_chat_prompt`**
+（`[1:]` 去掉它自带的 BOS，因为本函数已经加过了）。
+
+**这是有意的**：只要本轮复用，三条路径就不可能漂移。
+自己重写一遍 `f"<|user_start|>{u}<|user_end|>"` 就能立刻引入不一致。
+
+**system 的归属规则**也要两条路径一致：
+
+- `history` 非空 → system 合并进**第一条** user 消息
+- `history` 为空 → system 归**本轮**（等价于单轮路径）
+
+实测两条都成立。
+
+### ★ 这里有一个已修的真 bug，值得单独讲
+
+`render_history` 的 docstring 记着：
+
+> **★ user_text 必须传进来**
+> 曾经的 bug：`ask(user_text)` 调用的是
+> `render_history(tok, system, history)` —— **根本没把 user_text 传下去**，
+> 它只在生成完回复后进了 `history.append`。
+> 于是模型收到的 prompt 是
+> `<|bos|><|user_start|><|user_end|><|assistant_start|>`
+> 一个**空的 user 轮**，模型在凭空回答，**`chat.sh` 完全不可用**。
+
+**症状**：能跑、不报错、有输出，只是输出全是胡说。
+
+**为什么所有判据都抓不住**：`chat.sh` 的测试不检查「prompt 里有没有
+用户的问题」—— 而**加一条判据只需要断言这一件事**：
+
+```python
+assert tok.decode(render_history(tok, None, [], "What is 12*7?")).count("12") > 0
+```
+
+> **「多传一个参数」这种改动看起来太简单了，简单到没人会想到它能弄坏
+> 整个交互入口。** 但它正是本项目里唯一让 `chat.sh` 完全不可用的 bug。
+
+### 本节的判据
+
+```bash
+uv run pytest tests/test_data.py -k render_history -v
+uv run pytest tests/test_engine.py -k render_history -v
+```
+
+两条判据锁住「多轮历史保留 + system 合并 + 本轮问题真的进了 prompt」。
+
+⚠ **但本章开头那条「三条路径逐 token 对齐」的完整不变量
+（上面那段脚本）目前没有判据覆盖** —— 只有 `render_history` 的两条。
+**这是一个已知的缺口**：三条路径的一致性目前靠脚本验证，不是靠 CI。
+
 ## ★ 实测：SFT 到底学到了什么（2026-10，`ablation` 档）
 
 完整跑一遍 `bash script/train_sft.sh ablation`：**869 步 / 1m30s**

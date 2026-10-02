@@ -311,7 +311,12 @@ ratio: 4.42x
 ### 验证 5：两条路径数值等价
 
 ```bash
-uv run pytest tests/test_core.py -k flex -v
+uv run pytest tests/test_core.py -k numerically_equivalent -v
+
+> ⚠ **这条命令曾经选不中任何用例**（`-k flex` 全仓 30 deselected，
+> 永远「通过」）。flex 路径的判据其实叫
+> `test_sliding_window_paths_are_numerically_equivalent` ——
+> **它在内部 import 了 `attend_sliding_flex`，只是名字里没有 flex。**
 ```
 
 **为什么必须等价**：如果两条路径数值不同，「同一模型换个开关跑出

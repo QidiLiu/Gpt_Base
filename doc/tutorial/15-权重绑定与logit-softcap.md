@@ -251,6 +251,12 @@ return logits
 
 ```bash
 uv run pytest tests/test_core.py -k softcap -v
+
+> ⚠ **这条命令曾经也选不中任何用例** —— softcap 全仓零覆盖，
+> 而 `-k softcap` 看起来最自然。2026-10 补了 4 条判据才让它变绿。
+> **教训：`-k` 表达式要真的跑一次 `--collect-only` 确认选中数 ≥ 1。**
+> `progress.sh` 有自检守这件事，**文档里的命令没有** —— 所以每写一条
+> `-k` 命令，顺手验一下。
 ```
 
 自己也可以看曲线形状：

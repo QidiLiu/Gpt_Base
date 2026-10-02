@@ -1020,3 +1020,252 @@ def test_smear_mixes_previous_embedding():
     # 5) 是可学参数，必须有梯度
     model(torch.randint(0, 64, (1, 32)), torch.randint(0, 64, (1, 32))).backward()
     assert model.smear_lambda.grad is not None, "smear_lambda 没有梯度"
+
+
+# ===========================================================================
+# QK-Norm（第 12 章）
+#
+# ★ 为什么这两条是「补上的」：2026-10 审计发现 qk_norm_scale 全仓零覆盖。
+#   第 12 章自己的 progress.sh 判据是 `-k 'sdpa or attend'`，只选中
+#   test_sdpa_layout_is_bhtd_not_bthd 和 test_attend_matches_manual_reference
+#   —— 而 **QK-Norm 在 Attention.forward 里、在 attend() 之上**，
+#   那两条判据根本不经过它。**把 QK-Norm 敲错也全绿。**
+#
+# 不变量（来自 layers.py:360-362）：
+#     q = rms_norm(q) * qk_norm_scale
+#     k = rms_norm(k) * qk_norm_scale
+# rms_norm 把每个 head 的 RMS 拉到 1，所以归一化后每个 head 的
+# RMS 恰好等于 qk_norm_scale。
+# ===========================================================================
+def _tiny_attention(qk_norm_scale):
+    """建一个最小的 Attention，只为测 QK-Norm 这两步。"""
+    from model.layers import CausalSelfAttention
+    from common.config import build_model_config
+    cfg = build_model_config(2, 16, 8, sequence_len=32, vocab_size=64)
+    cfg.qk_norm_scale = qk_norm_scale
+    att = CausalSelfAttention(cfg, layer_idx=0)
+    att.to_empty(device="cpu")
+    # init_weights 依赖 meta 三步法，这里只需要 c_q/c_k 有确定值
+    for m in (att.c_q, att.c_k, att.c_v, att.c_proj):
+        torch.nn.init.normal_(m.weight, std=0.5)
+        if m.bias is not None:
+            torch.nn.init.zeros_(m.bias)
+    return att, cfg
+
+
+def test_qk_norm_pulls_each_head_to_the_configured_rms(monkeypatch):
+    """
+    ★ 核心不变量：开 QK-Norm 后，**真正送进 attend 的** q 和 k，
+    每个 head 的 RMS 都恰好等于 `qk_norm_scale`。
+
+    ── ★ 这条判据第一版是错的，记在这里别再犯 ──────────────────
+    最初我写成「自己算一遍 `rms_norm(q) * 1.2`，再断言它的 RMS 是 1.2」。
+    故障注入时把 forward 改成 `rms_norm(q)`（漏乘 scale）——
+    **判据全绿**。
+
+    因为它验证的是「我的重写对不对」，而不是「forward 有没有用它」。
+    **判据够不到被测代码时，它测的是重实现，不是实现。**
+
+    现在改成**截获 attend 收到的实参**，从 forward 内部取 q/k。
+    """
+    import model.layers as L
+    att, cfg = _tiny_attention(qk_norm_scale=1.2)
+    cfg.use_rope = False                      # 隔离出 QK-Norm 这一步
+    att.use_rope = False
+
+    captured = {}
+    real_attend = L.attend
+
+    def spy(q, k, v, window, attn_impl="flex"):
+        captured["q"], captured["k"] = q, k
+        return real_attend(q, k, v, window, attn_impl=attn_impl)
+
+    monkeypatch.setattr(L, "attend", spy)
+
+    torch.manual_seed(0)
+    x = torch.randn(2, 16, cfg.n_embd)
+    with torch.no_grad():
+        att(x, (torch.zeros(1, 16, 1), torch.zeros(1, 16, 1)), (16, 0))
+
+    assert "q" in captured, "spy 没被调用 —— forward 没走 attend，这条判据无效"
+    for name in ("q", "k"):
+        t = captured[name]
+        rms = t.float().pow(2).mean(-1).sqrt()
+        assert torch.allclose(rms, torch.full_like(rms, 1.2), atol=1e-4), (
+            f"送进 attend 的 {name}：每个 head 的 RMS 应恒等于 1.2，"
+            f"实测 {rms.min():.4f}~{rms.max():.4f}。"
+            "这条红了说明 QK-Norm 没生效或 scale 用错了"
+        )
+    # 顺带守住「先归一化再放大」这个顺序：如果写成 rms_norm(q*1.2)
+    # 结果也是 RMS=1.2，但那样没有「限幅」效果（下面那条单独验）
+
+def test_qk_norm_disabled_leaves_projections_untouched(monkeypatch):
+    """
+    `qk_norm_scale = 0.0` 是**关掉** QK-Norm 的开关（第 00 章的档位表）。
+
+    这条守的是「开关真的被检查」—— 和当年 `--no-rope` 那个
+    「开关只出现在打印字符串里、forward 无条件生效」的 bug 同类。
+
+    同样走 forward + 截获实参，不重写公式。
+    """
+    import model.layers as L
+    att, cfg = _tiny_attention(qk_norm_scale=0.0)
+    att.use_rope = False
+    captured = {}
+    real_attend = L.attend
+
+    def spy(q, k, v, window, attn_impl="flex"):
+        captured["q"], captured["k"] = q, k
+        return real_attend(q, k, v, window, attn_impl=attn_impl)
+
+    monkeypatch.setattr(L, "attend", spy)
+
+    torch.manual_seed(0)
+    x = torch.randn(2, 16, cfg.n_embd)
+    with torch.no_grad():
+        att(x, (torch.zeros(1, 16, 1), torch.zeros(1, 16, 1)), (16, 0))
+        # 必须 reshape 成 forward 里的那个形状才能比
+        B_, T_ = x.shape[0], x.shape[1]
+        raw_q = att.c_q(x).view(B_, T_, att.n_head, att.head_dim)
+        raw_k = att.c_k(x).view(B_, T_, att.n_kv_head, att.head_dim)
+
+    assert "q" in captured, "spy 没被调用"
+    # 关掉时 q/k 必须**原封不动**地进 attend（没有归一化、没有缩放）
+    assert torch.allclose(captured["q"], raw_q, atol=1e-6), \
+        "qk_norm_scale=0 时 q 被改了 -> 开关没被真正检查"
+    assert torch.allclose(captured["k"], raw_k, atol=1e-6), \
+        "qk_norm_scale=0 时 k 被改了 -> 开关没被真正检查"
+
+
+def test_qk_norm_bounds_attention_logits():
+    """
+    QK-Norm 的**目的**是让 logits = q·k/√d 有界，避免训练早期 softmax 饱和。
+
+    这条守的是最终效果：归一化后 |logits| 不超过
+    `qk_norm_scale² · √head_dim`（由 Cauchy-Schwarz 给出）。
+    """
+    from model.layers import attend
+    att, cfg = _tiny_attention(qk_norm_scale=1.2)
+    torch.manual_seed(1)
+    B, T = 2, 16
+    q = torch.randn(B, T, att.n_head, att.head_dim) * 40.0   # 故意很大
+    k = torch.randn(B, T, att.n_kv_head, att.head_dim) * 40.0
+
+    from model.layers import rms_norm
+    with torch.no_grad():
+        qn, kn = rms_norm(q) * 1.2, rms_norm(k) * 1.2
+        # Cauchy-Schwarz: |q·k| <= |q||k|，归一化后两者都是 1.2*sqrt(d)
+        assert qn.float().norm(dim=-1).max() <= 1.2 * (att.head_dim ** 0.5) + 1e-4
+        assert kn.float().norm(dim=-1).max() <= 1.2 * (att.head_dim ** 0.5) + 1e-4
+        v = torch.randn(B, T, att.n_kv_head, att.head_dim)
+        y = attend(qn, kn, v, (T, 0))
+    assert torch.isfinite(y).all(), "QK-Norm 之后注意力输出仍然有 inf/nan"
+    # 未归一化时同一批输入的 logits 会大得多（说明 QK-Norm 确实在做事）
+    raw_qn = (q.float() @ k.float().transpose(-1, -2)) / (att.head_dim ** 0.5)
+    qn_qk = (qn.float() @ kn.float().transpose(-1, -2)) / (att.head_dim ** 0.5)
+    assert qn_qk.abs().max() < raw_qn.abs().max() / 10, (
+        f"归一化后 logits 上界 {qn_qk.abs().max():.1f} "
+        f"没有比归一化前 {raw_qn.abs().max():.1f} 小一个数量级"
+    )
+
+
+# ===========================================================================
+# Logit softcap（第 15 章）
+#
+# ★ 同样是 2026-10 审计补上的：logit_softcap 全仓零断言。
+#   唯一碰到它的 test_forward_loss_starts_uniform 在**初始化**下跑，
+#   而 tanh(0/15)*15 = 0 —— softcap 在那个区间是 **no-op**。
+#   敲坏它不会被发现。
+#
+# 不变量（来自 gpt.py:318-319）：
+#     logits = cap * tanh(logits / cap)
+# ===========================================================================
+def test_softcap_compresses_large_logits_into_the_range():
+    """
+    ★ 核心不变量：**真正从 GPT.forward 出来的** logits 被压在 [-cap, cap]。
+
+    ── ★ 这条判据第一版也是错的 ──────────────────────────────────
+    最初我直接测 `cap * tanh(x/cap)` 这个变换本身。
+    但那是**重实现** —— 它验证「我写的数学对」，不验证
+    「forward 用了它」。softcap 整段被删掉时它照样绿。
+
+    现在改成把 lm_head 的权重放大 1e4，逼出远超 cap 的 raw logits，
+    再看 forward 的**输出**。删掉 softcap 段就红。
+
+    ── 顺带记一个数值细节 ────────────────────────────────────────
+    断言是 `<= cap` 而不是 `< cap`：float32 下 `tanh(1e4/15)` 已经
+    饱和到恰好 1.0，所以输出会**精确等于** cap。
+    **softcap 是渐近软上限，不是硬 clamp。**
+    """
+    from model.gpt import GPT
+    from common.config import build_model_config
+    torch.manual_seed(0)
+    cap = 15.0
+    cfg = build_model_config(2, 16, 8, sequence_len=8, vocab_size=64)
+    cfg.logit_softcap = cap
+    model = GPT(cfg)
+    model.to_empty(device="cpu")
+    model.init_weights()
+
+    # lm_head 初始化 std=0.001，logits 接近 0 —— 那时 softcap 是 no-op。
+    # 必须把权重放大，逼出真正超出 cap 的 raw logits。
+    with torch.no_grad():
+        model.lm_head.weight.mul_(1e4)
+
+    x = torch.randint(0, 64, (2, 8))
+    with torch.no_grad():
+        capped = model(x)                       # forward 的真实输出
+
+    assert capped.abs().max() <= cap, (
+        f"softcap=15 时 forward 输出的 |logit| 达到 {capped.abs().max():.1f} "
+        "-> softcap 没生效"
+    )
+    # 而且确实压过：把同样权重的 softcap 关掉，raw logits 应该远超 15
+    cfg2 = build_model_config(2, 16, 8, sequence_len=8, vocab_size=64)
+    cfg2.logit_softcap = 0.0
+    m2 = GPT(cfg2)
+    m2.to_empty(device="cpu")
+    m2.init_weights()
+    with torch.no_grad():
+        m2.lm_head.weight.mul_(1e4)
+        raw = m2(x)
+    assert raw.abs().max() > 5 * cap, (
+        f"对照组 softcap=0 时 |logit| 只有 {raw.abs().max():.1f}，"
+        "没能证明 softcap 真的在做事（放大 lm_head 还不够狠）"
+    )
+    # 同一个权重下，被压的明显更小
+    assert capped.abs().max() < raw.abs().max() / 10, (
+        "softcap 前后差别不够大 -> 这条判据测不出东西"
+    )
+    # 排序不变：softcap 是单调的，所以 argmax 必须一致
+    assert torch.equal(capped[..., -1].argmax(-1), raw[..., -1].argmax(-1)), \
+        "softcap 改变了 argmax —— 它不该改变（tanh 单调）"
+
+
+def test_softcap_disabled_is_a_pure_passthrough():
+    """`logit_softcap = 0.0` 是关掉它的开关（第 15 章的消融项）。"""
+    from model.gpt import GPT
+    from common.config import build_model_config
+    torch.manual_seed(0)
+    cfg = build_model_config(2, 16, 8, sequence_len=8, vocab_size=64)
+    cfg.logit_softcap = 0.0
+    model = GPT(cfg)
+    model.to_empty(device="cpu")
+    model.init_weights()
+
+    # 开关必须真的被 forward 检查
+    assert cfg.logit_softcap == 0.0
+    src = __import__("inspect").getsource(GPT.forward)
+    assert "if cfg.logit_softcap > 0:" in src, (
+        "forward 里找不到 `if cfg.logit_softcap > 0` —— "
+        "softcap 可能变成无条件生效（与当年 --no-rope 同类的 bug）"
+    )
+    # 关掉时 logits 必须原样通过：造一个超大权重的 lm_head，看它不炸
+    with torch.no_grad():
+        model.lm_head.weight.mul_(1e3)
+    x = torch.randint(0, 64, (2, 8))
+    with torch.no_grad():
+        logits = model(x)
+    assert logits.abs().max() > 15.0, (
+        "logit_softcap=0 时 logits 仍被压在 15 以内 —— 开关没生效"
+    )

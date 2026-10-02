@@ -23,10 +23,13 @@ declare -A CHAPTERS=(
   ["09"]="tests/test_core.py -k 'rope'"
   ["10"]="tests/test_core.py -k 'attend or sliding'"
   ["11"]="tests/test_core.py -k 'sdpa'"
-  ["12"]="tests/test_core.py -k 'sdpa or attend'"
+  # QK-Norm 在 Attention.forward 里、在 attend() 之上，
+  # 所以「sdpa or attend」那两条根本不经过它 —— 必须显式带上 qk_norm。
+  ["12"]="tests/test_core.py -k 'sdpa or attend or qk_norm'"
   ["13"]="tests/test_core.py -k 'mlp_activation'"
   ["14"]="tests/test_core.py -k 'causal'"
-  ["15"]="tests/test_core.py -k 'uniform or sampling or topk'"
+  # logit_softcap 在初始化区间是 no-op，只有放大 lm_head 的判据能验到它
+  ["15"]="tests/test_core.py -k 'uniform or sampling or topk or softcap'"
   ["16"]="tests/test_core.py -k 'meta_device'"
   ["17"]="tests/test_core.py -k 'lambdas'"
   ["18"]="tests/test_core.py -k 'value_embeds'"
@@ -85,6 +88,6 @@ echo
 printf '\033[1;33m[重要]\033[0m 改完 src/ 或 tests/ 之后，先确认判据本身是可达的：\n'
 echo "  git stash push -- src/ tests/    # 有改动才需要；工作区干净时会报错，可跳过"
 echo "  git checkout solution && uv run pytest tests/ -q"
-echo "  # 预期：210 passed, 2 skipped（2 个 skipped 是「只在骨架态有意义」的判据）"
+echo "  # 预期：215 passed, 2 skipped（2 个 skipped 是「只在骨架态有意义」的判据）"
 echo "  git checkout main && git stash pop"
 echo "  （判据若在完整答案上都过不了，你永远敲不到全绿 —— 见 tests/test_judging_soundness.py）"

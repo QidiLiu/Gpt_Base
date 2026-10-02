@@ -154,7 +154,7 @@ def test_chapter_suites_still_have_enough_cases():
     minimum = {
         "test_presets.py": 21,         # 卷0（只读，应全绿）
         "test_data.py": 20,            # 卷1
-        "test_core.py": 30,            # 卷2-3
+        "test_core.py": 35,            # 卷2-3
         "test_optim.py": 14,           # 卷4
         "test_metrics.py": 11,         # 卷7 只读代码护栏
         "test_checkpoint.py": 15,      # 卷5 只读代码护栏

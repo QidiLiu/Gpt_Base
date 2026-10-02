@@ -104,9 +104,32 @@ def main():
     t0 = time.time()
     tokdir = get_tokenizer_dir()
     ckpt = os.path.join(tokdir, "tokenizer.pkl")
+
+    # ★ 复用缓存前**必须核对词表大小**。
+    #   缓存目录只有一个槽位，不按 vocab_size 分桶 —— 谁先跑谁建好，
+    #   之后所有档位都复用那一个。
+    #   曾经的真实后果：某次 smoke 建了个 V=8192 的 tokenizer，之后
+    #   ablation/full 传 --vocab-size 16384 被静默忽略，真的按 8192 训练，
+    #   而日志只写「tokenizer 已存在，跳过训练」——
+    #   lm_head 尺寸差一倍，而没有任何一行提示对不上。
+    #   详见 doc/tutorial/37-全流程与排错.md。
+    need_train = True
     if os.path.exists(ckpt):
-        log0(f"tokenizer 已存在，跳过训练：{ckpt}")
-    else:
+        try:
+            cached_vocab = BPETokenizer.load(tokdir).get_vocab_size()
+        except Exception as e:
+            # 文件在但读不出来（半个 pkl / 版本不兼容）—— 同样该重建
+            log0(f"缓存的 tokenizer 读不出来（{type(e).__name__}: "
+                 f"{str(e)[:60]}），重建")
+            cached_vocab = None
+        if cached_vocab == args.vocab_size:
+            log0(f"tokenizer 已存在（V={cached_vocab}），跳过训练：{ckpt}")
+            need_train = False
+        elif cached_vocab is not None:
+            log0(f"缓存的 tokenizer 是 V={cached_vocab}，"
+                 f"与要求的 V={args.vocab_size} 不符 -> 重建")
+
+    if need_train:
         if args.toy:
             log0("用 tinyshakespeare 训练 tokenizer（toy 模式）")
             tok = BPETokenizer.train(iter_tiny_text(), args.vocab_size)
@@ -117,15 +140,18 @@ def main():
             )
         tok.save(tokdir)
 
-        # token_bytes 必须用最终词表算，所以放在训练之后
+        # token_bytes 必须用最终词表算，所以放在训练之后。
+        # 旧的那个和词表不匹配，所以无条件覆盖 —— 不做「已存在就跳过」。
         device = autodetect_device_type()
         tb = compute_token_bytes(tok, device)
         torch.save(tb.cpu(), os.path.join(tokdir, "token_bytes.pt"))
         log0(f"token_bytes 已保存 ({tb.numel():,} tokens)")
         log0(f"tokenizer 训练耗时 {human_time(time.time()-t0)}")
 
-    # 无论是否训练都跑一次报告，方便随时检查当前 tokenizer 的质量
-    report_compression(BPETokenizer.load())
+    # 无论是否训练都跑一次报告，方便随时检查当前 tokenizer 的质量。
+    # 必须传 tokdir —— 不传会回落到 get_tokenizer_dir()，
+    # 那样报告的是「别处那个」tokenizer 而不是刚处理过的这个。
+    report_compression(BPETokenizer.load(tokdir))
 
 
 if __name__ == "__main__":

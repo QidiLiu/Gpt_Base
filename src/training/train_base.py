@@ -35,7 +35,7 @@ from common import (
     COMPUTE_DTYPE_REASON,
     flash_backend_report,
 )
-from common.config import make_run_config, resolve_scaling
+from common.config import make_run_config, resolve_scaling, PRESETS
 from data.tokenizer import get_tokenizer, get_token_bytes
 from data.dataloader import make_dataloader
 from model.gpt import build_model
@@ -251,6 +251,52 @@ def make_schedulers(train_cfg, num_iterations: int, weight_decay_final: float):
 # ===========================================================================
 # 训练
 # ===========================================================================
+def summarize_throughput(flops_per_token, total_batch, timed_steps,
+                         total_time, peak_flops):
+    """
+    收尾那个「总 FLOPs / 平均 MFU」。返回 (total_flops, mfu_percent or None)。
+
+    ★ 分子和分母**必须描述同一批步**。
+
+    total_time 只累加 `step > 10` 的步（编译时间不该算进平均），
+    所以分子里的步数也必须只数 `timed_steps`。
+
+    踩过的坑：分子用 `num_iterations`、分母用「跳过前 10 步之后」，
+    误差 = n/(n-11)。`full` 档全程（2088 步）只偏 0.53%，看不出来；
+    而 13 步的短跑偏 **696 倍** —— 日志报 119.96% 的 MFU，
+    而逐步 MFU 只有 27.7%。
+
+    ⚠ MFU > 100% 在定义上不可能，所以这个值顺带是个物理自检。
+    """
+    total_flops = flops_per_token * total_batch * timed_steps
+    mfu = (100 * total_flops / total_time / peak_flops
+           if total_time > 0 and peak_flops != float("inf") else None)
+    return total_flops, mfu
+
+
+def vocab_mismatch_messages(mode, expected, actual):
+    """
+    词表一致性检查。返回要打印的行；一致时返回空列表。
+
+    ★ 单独抽成函数是为了能直接测它 ——
+      「告警逻辑」本身也是判据该覆盖的行为，
+      不测的话它会随着某次重构悄悄消失。
+
+    为什么需要它：正常路径由 script/train_base.sh 先跑 train_tokenizer，
+    而它会核对词表大小并按需重建。但**直接调 train_base 会绕过那一步**，
+    缓存里是什么就用什么。2026-10 实测发现本仓库真的按 V=8192
+    训过本该 V=16384 的档位（详见 doc/tutorial/37-全流程与排错.md）。
+    """
+    if expected == actual:
+        return []
+    return [
+        f"  [注意] tokenizer 的词表是 V={actual}，但 {mode} 档期望 V={expected}。",
+        f"         本次将按 V={actual} 训练（预设里的 {expected} 只作占位，不影响计算）。",
+        f"         若要按 {expected} 训练：先跑 `bash script/train_base.sh {mode}`"
+        f"（它会按词表大小重建 tokenizer），或 `rm -rf ~/.cache/gpt_base/tokenizer` 后重跑。",
+    ]
+
+
 def main():
     args = parse_args()
     device_type = autodetect_device_type()
@@ -263,6 +309,11 @@ def main():
     tokenizer = get_tokenizer()
     cfg = make_run_config(args.mode, depth=args.depth, vocab_size=tokenizer.get_vocab_size())
     apply_overrides(cfg, args)
+
+    # ★ 词表一致性告警（最后一道防线）。理由见 vocab_mismatch_messages 的 docstring。
+    for _line in vocab_mismatch_messages(
+            args.mode, PRESETS[args.mode]["vocab_size"], tokenizer.get_vocab_size()):
+        log0(_line)
     log0(f"\n【配置】{args.mode} 档")
     log0("── 单一旋钮推导 " + "─" * 45)
     sc = resolve_scaling(cfg, log=log0)
@@ -359,7 +410,11 @@ def main():
     # ---- 6) 训练循环 ----
     model.train()
     # best_bpb 与 history 已在上面的续训块里初始化（续训时会从 meta 恢复）
-    ema, smooth, total_time = 0.9, 0.0, 0.0
+    # timed_steps 必须和 total_time 一起累加 —— 它们描述的是同一批步。
+    # 只加 total_time 会让收尾的 total_flops / total_time 分子分母口径不一致
+    # （分子数了全部 num_iterations 步，分母只数了跳前 10 步之后的）。
+    # 13 步的 full 档会因此报出 19833%，而逐步 MFU 只有 27.7%。
+    ema, smooth, total_time, timed_steps = 0.9, 0.0, 0.0, 0
     t_start = time.time()
     log0("── 训练 " + "─" * 58)
 
@@ -394,6 +449,7 @@ def main():
         dt = time.time() - t0
         if step > 10:
             total_time += dt
+            timed_steps += 1
 
         # ---- 6.3 日志 ----
         lf = loss_val.item()
@@ -453,14 +509,18 @@ def main():
     # ---- 7) 收尾 ----
     sync()
     peak_mem = get_max_memory(device_type)() / 1024 ** 2
-    total_flops = flops_per_token * sc["total_batch_size"] * num_iterations
+    # 只统计「计入 total_time 的那几步」，与分母同口径。
+    total_flops, avg_mfu = summarize_throughput(
+        flops_per_token, sc["total_batch_size"], timed_steps,
+        total_time, peak_flops)
     log0("\n── 完成 " + "─" * 58)
     log0(f"  总耗时（不含前 10 步）: {human_time(total_time)}")
     log0(f"  全程墙钟              : {human_time(time.time() - t_start)}")
     log0(f"  峰值显存              : {peak_mem:.0f} MiB")
-    log0(f"  总 FLOPs              : {total_flops:.4e}")
-    if total_time > 0 and peak_flops != float("inf"):
-        log0(f"  平均 MFU              : {100*total_flops/total_time/peak_flops:.2f}%")
+    log0(f"  总 FLOPs              : {total_flops:.4e}"
+         f"（{timed_steps} 步，与上面「总耗时」同口径）")
+    if avg_mfu is not None:
+        log0(f"  平均 MFU              : {avg_mfu:.2f}%")
     if best_bpb < float("inf"):
         log0(f"  最好 val_bpb          : {best_bpb:.4f}")
 

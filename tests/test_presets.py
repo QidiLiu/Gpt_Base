@@ -461,3 +461,209 @@ def test_unknown_optim_prefix_raises():
     """optim 的前缀分发也不能吞掉拼错的键（muon_/adamw_ 后面必须是真的字段）。"""
     with pytest.raises(ValueError, match="未知的配置项"):
         make_run_config("debug", vocab_size=8192, muon_flavour="advanced")
+
+
+# ===========================================================================
+# tokenizer 缓存必须按词表大小分桶
+#
+# ★ 这是本项目最贵的一个静默失效（2026-10 实测发现，见教程卷 8 第 37 章）。
+#
+# 真实的因果链：
+#   script/_common.sh 说 ablation/full 要 VOCAB=16384
+#   -> train_base.sh 传 --vocab-size 16384 给 train_tokenizer
+#   -> train_tokenizer 原来只判 `if os.path.exists(ckpt)` 就「跳过训练」
+#   -> 某次 smoke 在缓存里建了个 V=8192 的 tokenizer
+#   -> 之后 ablation/full 的 16384 被**静默忽略**，真的按 8192 训练
+#
+# 后果：lm_head 尺寸差一倍（12,582,912 vs 6,291,456），
+# 12 张 value-embeddings 表差一半，而日志只写「tokenizer 已存在，跳过训练」。
+#
+# 判据怎么写才抓得住？关键是不能只断言「最终词表对」——
+# 那要真训一次 16384 的 tokenizer，太慢。真正的判据是
+# **「换一个大小调用时，缓存是否被重建」**。
+# ===========================================================================
+import os
+import sys
+
+import torch
+
+
+def _run_train_tokenizer(tmp_path, vocab_size, monkeypatch):
+    """在 tmp_path 下跑一次 train_tokenizer.main()（toy 模式，秒级）。"""
+    from training import train_tokenizer as T
+
+    monkeypatch.setattr(T, "get_tokenizer_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(sys, "argv",
+                        ["train_tokenizer", "--toy",
+                         "--vocab-size", str(vocab_size)])
+    T.main()
+    return T
+
+
+def test_tokenizer_cache_is_reused_when_vocab_size_matches(tmp_path, monkeypatch):
+    """大小一致时**仍然**要复用缓存 —— 别把它改成每次都重训。"""
+    T = _run_train_tokenizer(tmp_path, 300, monkeypatch)
+    first = os.path.getmtime(os.path.join(tmp_path, "tokenizer.pkl"))
+    contents = open(os.path.join(tmp_path, "tokenizer.pkl"), "rb").read()
+
+    T.main()   # 再来一次，同样大小
+
+    assert open(os.path.join(tmp_path, "tokenizer.pkl"), "rb").read() == contents, (
+        "词表大小相同却重建了 tokenizer —— 缓存复用被破坏了。"
+        "每次重建都要几十秒到几分钟，入口脚本会变得无法使用。"
+    )
+    assert os.path.getmtime(os.path.join(tmp_path, "tokenizer.pkl")) == first
+
+
+def test_tokenizer_cache_rebuilds_when_vocab_size_differs(tmp_path, monkeypatch):
+    """
+    ★ 本条守住那个静默失效：换一个词表大小时**必须重建**。
+
+    修之前的实现是 `if os.path.exists(ckpt): 跳过`，所以这条会红。
+    """
+    from data.tokenizer import BPETokenizer
+
+    T = _run_train_tokenizer(tmp_path, 300, monkeypatch)
+    assert BPETokenizer.load(str(tmp_path)).get_vocab_size() == 300
+    stale = open(os.path.join(tmp_path, "tokenizer.pkl"), "rb").read()
+
+    T.main.__globals__  # noqa: B018  下面重新设 argv 换大小
+    monkeypatch.setattr(sys, "argv",
+                        ["train_tokenizer", "--toy",
+                         "--vocab-size", str(520)])
+    T.main()
+
+    assert BPETokenizer.load(str(tmp_path)).get_vocab_size() == 520, (
+        "要求 V=520，但缓存里的 tokenizer 还是别的词表 —— "
+        "这就是 ablation/full 被静默按 8192 训练的那个 bug"
+    )
+    assert open(os.path.join(tmp_path, "tokenizer.pkl"), "rb").read() != stale, (
+        "词表文件内容没变，说明重建根本没发生"
+    )
+
+
+def test_token_bytes_cache_is_regenerated_together_with_tokenizer(tmp_path, monkeypatch):
+    """
+    ★ 第二阶的后果：token_bytes.pt 必须和 tokenizer 一起换。
+
+    bpb 的分母是 token_bytes（每个 token 覆盖几个字节）。
+    如果只重建 tokenizer.pkl 而留下旧的 token_bytes.pt，
+    **bpb 会静默算错** —— 而 bpb 是本项目唯一跨模型可比的指标。
+
+    所以这两者必须是同一个「重建单元」，不能分开缓存。
+    """
+    _run_train_tokenizer(tmp_path, 300, monkeypatch)
+    tb_before = torch.load(os.path.join(tmp_path, "token_bytes.pt"),
+                           weights_only=True)
+    assert len(tb_before) == 300
+
+    from data.tokenizer import BPETokenizer
+
+    monkeypatch.setattr(sys, "argv",
+                        ["train_tokenizer", "--toy",
+                         "--vocab-size", str(520)])
+    _run_train_tokenizer(tmp_path, 520, monkeypatch)
+
+    tok = BPETokenizer.load(str(tmp_path))
+    tb_after = torch.load(os.path.join(tmp_path, "token_bytes.pt"),
+                          weights_only=True)
+    assert tok.get_vocab_size() == 520
+    assert len(tb_after) == 520, (
+        f"tokenizer 已经是 V=520，但 token_bytes 还有 {len(tb_after)} 条 —— "
+        "bpb 会用错的分母算出错的指标，而且不报错"
+    )
+
+
+def test_train_base_warns_when_tokenizer_vocab_differs_from_preset():
+    """
+    ★ 最后一道防线：直接调 training.train_base（绕过 train_base.sh）时，
+    train_tokenizer 不会被执行，缓存里是什么就用什么。
+
+    所以 main() 里必须比一次「预设期望值」和「tokenizer 实际值」。
+    这里只测**判定逻辑**，不真的跑训练。
+    """
+    from training.train_base import vocab_mismatch_messages
+
+    for mode, expected in ALL_MODES:
+        # 假装缓存里是个和预设不一样大的词表
+        fake = 8192 if expected != 8192 else 16384
+        assert fake != expected, "这个用例本身写错了：fake 必须不同于 expected"
+
+        warned = vocab_mismatch_messages(mode, expected, fake)
+        assert warned, (
+            f"{mode} 档：tokenizer V={fake} != 预设 V={expected}，"
+            "却没有产生任何告警 —— 直接调 train_base 时会静默用错词表"
+        )
+        assert any("注意" in m and "期望" in m for m in warned), (
+            f"告警行里没有说清「哪个是实际的、哪个是期望的」：{warned}"
+        )
+
+    # 一致时不该告警
+    for mode, expected in ALL_MODES:
+        assert vocab_mismatch_messages(mode, expected, expected) == [], (
+            f"{mode} 档：词表一致却报了告警，会变成噪声"
+        )
+
+
+# ===========================================================================
+# 收尾的「平均 MFU」：分子分母必须同口径
+#
+# 真实的 bug（2026-10 实测发现）：total_flops 数了全部 num_iterations 步，
+# 而 total_time 只累加 `step > 10` 的步。误差 = n/(n-11)。
+#   13 步的 full 档 -> 日志报 119.96%，逐步 MFU 只有 27.68%
+#   2088 步全程    -> 只偏 0.53%，所以一直没人发现
+# ===========================================================================
+def test_average_mfu_numerator_and_denominator_cover_the_same_steps():
+    """
+    ★ 分子（total_flops）只数「计入 total_time 的那几步」。
+
+    用 13 步那次的真实数字复现：逐步 MFU 实测 27.68%。
+    """
+    from training.train_base import summarize_throughput
+
+    flops_per_token = 1.28346e9        # V=8192 的 full 档实测
+    batch = 1_048_576
+    peak = 8.26e13                     # RTX 4060 Ti 表值
+    timed_steps, total_time = 3, 176.57
+
+    total_flops, mfu = summarize_throughput(
+        flops_per_token, batch, timed_steps, total_time, peak)
+
+    assert total_flops == flops_per_token * batch * timed_steps, (
+        "分子的步数不是 timed_steps —— 这就是那个 bug"
+    )
+    # 每步耗时相同的话，平均 MFU 必须等于逐步 MFU
+    per_step_mfu = 100 * flops_per_token * batch / (total_time / timed_steps) / peak
+    assert mfu == pytest.approx(per_step_mfu, rel=1e-12)
+    # 27.68% 是那次实测日志里逐步 MFU 的稳态值。
+    # 用真实的 V=8192 词表重算能和日志对到小数点后两位 ——
+    # 而用预设的 V=16384 算会得到 28.50%，正好差 3%。
+    assert per_step_mfu == pytest.approx(27.68, abs=0.01), (
+        f"逐步 MFU 应该 ≈27.68%（实测值），算成了 {per_step_mfu:.2f}%。"
+        "若偏差约 3%，多半是 flops_per_token 用错了词表（见卷 8 第 37 章）"
+    )
+
+
+def test_average_mfu_can_never_exceed_100_percent():
+    """
+    MFU > 100% 在定义上不可能，所以它天然是个物理自检。
+
+    这里用「整段训练只跑了 3 步但 num_iterations=2088」这个具体场景：
+    旧实现会算出 19834%（分子按 2088 步、分母按 3 步）。
+    """
+    from training.train_base import summarize_throughput
+
+    flops_per_token, batch, peak = 1.28346e9, 1_048_576, 8.26e13
+    _tf, mfu = summarize_throughput(
+        flops_per_token, batch, timed_steps=3, total_time=176.57, peak_flops=peak)
+    assert 0 < mfu < 100, f"MFU={mfu}% 超出 (0,100) —— 分子分母口径不一致"
+
+    # 顺便钉住边界
+    assert summarize_throughput(
+        flops_per_token, batch, 0, 0.0, peak)[1] is None, (
+        "没有计时步时不该返回一个数（否则 ZeroDivisionError）"
+    )
+    assert summarize_throughput(
+        flops_per_token, batch, 5, 10.0, float("inf"))[1] is None, (
+        "非 CUDA 平台 peak 是 inf，MFU 应该为 None 而不是 0"
+    )

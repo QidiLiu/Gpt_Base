@@ -11,7 +11,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 # 章节 -> pytest -k 表达式（多个用逗号或空格分隔的 -k 都行）
 declare -A CHAPTERS=(
-  ["00-01"]="tests/test_presets.py -k 'presets'"
+  # 卷 0：单一旋钮与档位自洽（只读）。含 tokenizer 缓存按词表大小分桶那条。
+  ["00-01"]="tests/test_presets.py -k 'presets or tokenizer_cache or token_bytes_cache or vocab_differs'"
   ["02"]="tests/test_data.py -k 'tokenizer or special or decode_bytes or parquet'"
   ["03"]="tests/test_data.py -k 'tokenizer or decode_bytes'"
   ["04"]="tests/test_data.py -k 'mask or python_output or truncate or alternation'"
@@ -84,6 +85,6 @@ echo
 printf '\033[1;33m[重要]\033[0m 改完 src/ 或 tests/ 之后，先确认判据本身是可达的：\n'
 echo "  git stash push -- src/ tests/    # 有改动才需要；工作区干净时会报错，可跳过"
 echo "  git checkout solution && uv run pytest tests/ -q"
-echo "  # 预期：204 passed, 2 skipped（2 个 skipped 是「只在骨架态有意义」的判据）"
+echo "  # 预期：210 passed, 2 skipped（2 个 skipped 是「只在骨架态有意义」的判据）"
 echo "  git checkout main && git stash pop"
 echo "  （判据若在完整答案上都过不了，你永远敲不到全绿 —— 见 tests/test_judging_soundness.py）"

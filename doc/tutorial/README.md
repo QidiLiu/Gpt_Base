@@ -133,14 +133,14 @@ src/
 ### 卷 4 · 优化器（最硬核的一卷）
 | 章 | 标题 | 核心问题 |
 |---|---|---|
-| 21 | 从 SGD 到 AdamW | 每个超参在干什么 |
-| 22 | 为什么矩阵参数适合 Muon | SVD 视角 |
-| 23 | **手写 Newton-Schulz 正交化** | 20 行代码，5 步变成正交 |
-| 24 | Polar Express | 更好的每步系数 |
-| 25 | MuonEq / Muon+ / NorMuon | 三个修正各修什么 |
-| 26 | 谨慎权重衰减 | 只在「往 0 拉」时衰减 |
-| 27 | 混合优化器与参数分组 | 谁该用 Muon，谁该用 AdamW |
-| 28 | torch.compile 融合与 0-D tensor 技巧 | 怎么让编译不被超参变化打断 |
+| [21](21-从SGD到AdamW.md) | 从 SGD 到 AdamW | 每个超参在干什么；解耦 WD 的可测量含义 |
+| [22](22-为什么矩阵参数适合Muon.md) | 为什么矩阵参数适合 Muon | 条件数 2042 → 6.36 |
+| [23](23-手写Newton-Schulz正交化.md) | **手写 Newton-Schulz 正交化** | 20 行；5 步落在 `[0.5,1.5]`，8 步饱和 |
+| [24](24-Polar-Express.md) | Polar Express | 斜率 3.44 → 8.16；**`ns_steps>5` 静默失效** |
+| [25](25-MuonEq-Muon+与NorMuon.md) | MuonEq / Muon+ / NorMuon | **`use_muon_plus` 不是论文的**；因子化省 647 MiB |
+| [26](26-谨慎权重衰减.md) | 谨慎权重衰减 | `g` 是正交化后的量；真实配置衰减只占 3.1% |
+| [27](27-混合优化器与参数分组.md) | 混合优化器与参数分组 | `ndim==2` 划错一处；形状补偿与论文不一致 |
+| [28](28-torch.compile融合与0-D-tensor技巧.md) | torch.compile 融合与 0-D tensor | **一个 if 值 9.9 小时**；静默回落 |
 
 ### 卷 5-8 · 训练循环、分布式、对齐、收尾
 *（第二批交付：代码已在 `src/` 中，教程随第二批补上）*

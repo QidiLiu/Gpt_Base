@@ -143,7 +143,10 @@ class MuonConfig:
     flavor:
       "simple"   最简版：5 步 Newton-Schulz 正交化。教学默认，代码短。
       "advanced" 完整版：Polar Express 正交化 + MuonEq 行均衡
-                  + Muon+ 重归一化 + NorMuon 方差缩减 + 谨慎权重衰减。
+                  + "Muon+" 范数归一 + NorMuon 方差缩减 + 谨慎权重衰减。
+                  ⚠ 那个 "Muon+" 不是论文 2602.21545 的行列归一化，
+                    是全局 Frobenius 范数 snap，实测只改善 5%。
+                    详见 tutorial/25。
                   这是 nanochat 的生产配置，代码长 3 倍。
     教程卷4 会先把 simple 手写一遍，再讲 advanced 每一步在修什么。
     """

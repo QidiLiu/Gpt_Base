@@ -44,7 +44,26 @@ from optim.orthogonalize import (
 # 下面是把这套机制封装一下，免得每次都写一堆 self._xxx_t。
 
 class HyperParams:
-    """一组可热更新的 0-D CPU tensor。"""
+    """
+    一组可热更新的 0-D CPU tensor。
+
+    ⚠⚠⚠ 构造函数**只登记键名，不赋值** —— 所有值恒为 0。
+      写成 `HyperParams(lr=0.3, beta2=0.995)` 拿到的 `lr` 是 **0**，
+      不是 0.3。这是有意契约，不是 bug。
+
+      契约的由来：2026-09 那批坏判据的直接根因 —— 有测试把 kwargs
+      当成赋值传进去，于是所有超参都是 0，偏差校正里 `1 - beta**step`
+      退化成 1，分母估错，整个更新算成 NaN。
+      修法不是「让它按字面意思赋值」，而是**只留 .set() 一个赋值入口**，
+      让「我以为 kwargs 生效了」这件事在结构上就不可能发生。
+      tests/test_judging_soundness.py 里有判据钉死这条契约。
+
+      所以写验证脚本时**必须**先 .set()：
+          hp = HyperParams(lr=0, beta2=0)      # 只登记键名
+          hp.set(lr=0.3, beta2=0.995, ...)    # 真正的赋值入口
+      忘了 .set() 的话所有超参是 0 -> 更新变 NaN，而且**不报任何错**。
+      写 tutorial/21 时我自己踩了一次。
+    """
 
     def __init__(self, **kwargs):
         self._t = {k: torch.tensor(0.0, dtype=torch.float32, device="cpu")

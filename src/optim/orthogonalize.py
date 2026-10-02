@@ -121,13 +121,29 @@ def orthogonalize_advanced(G: torch.Tensor, steps: int = 5,
        出处：Polar Express, arXiv 2505.16932
 
     3) Muon+ 重归一化（use_muon_plus）
-       问题：有限步迭代不会精确收敛到正交矩阵（奇异值停在 [0.5,1.5] 附近），
-             而且如果谱里有极小奇异值，迭代**根本推不动**它
-             （Newton-Schulz 在 0 附近斜率低 -> x=0 是不动点）。
-       做法：算完之后强行把 Frobenius 范数 snap 到 √min(m,n)
-             —— 那是一个「恰好正交」矩阵应有的范数。
-             这能让「推不动的极小奇异值」对应的方向整体被放大回来。
-       出处：Muon+, arXiv 2602.21545
+       ⚠⚠⚠ **名字有误导：这不是论文的 Muon+，也不是它要修的问题。**
+
+       论文（arXiv 2602.21545）说的 Muon+ 是：在正交化之后
+       插入一次**沿列或沿行的 L2 归一化**（每行/每列拉到单位长度），
+       目的是消除「post-polar imbalanced update」—— 论文证明
+       实际的 5 步极化会**放大**行列范数方差，而不是消除它。
+
+       这里实际做的是：把**全局** Frobenius 范数 snap 到 √min(m,n)。
+
+       这两件事的效果差 6 个数量级。实测（256×128，列范数跨 100 倍）：
+           仅正交化（基线）      行方差 2.358e-03   列方差 8.041e-03
+           本实现的「Muon+」     行方差 2.235e-03   列方差 7.622e-03   ← 只改善 5%
+           论文版 Norm_row      行方差 7.591e-15   列方差 2.988e-02   ← 改善 31 万倍
+       原因：全局标量乘数不改变行与行之间的**相对**范数，
+       而论文要消除的正是那个相对差异。
+
+       早期版本的 docstring 把它说成「让推不动的极小奇异值被整体放大」
+       —— 那个动机也是错的：整体放大对所有方向一视同仁，
+       不改变极小方向相对其他方向的比例。
+
+       保留它的理由：(a) 它数值上无害（不产生 NaN/Inf）；
+       (b) 修它属于**行为改动**，会改变 full 档全部训练结果，
+       应作为独立决策而不是顺手改。详见 tutorial/25。
     """
     X = G
 
@@ -165,9 +181,12 @@ def orthogonalize_advanced(G: torch.Tensor, steps: int = 5,
     if transposed:
         X = X.mT
 
-    # ---- 3) Muon+ 重归一化 -------------------------------------------------
+    # ---- 3) 「Muon+」重归一化 -----------------------------------------------
+    # ⚠ 见上面 docstring：这是全局 Frobenius 范数 snap，**不是**论文
+    #   2602.21545 的行列 L2 归一化。实测效果差 6 个数量级。
+    #   名字保留是为了不打乱 MuonConfig 的开关命名，但不要被它误导。
     if use_muon_plus:
-        # 一个 m×n 的半正交矩阵（m≤n），Frobenius 范数恰好是 √m
+        # 一个 m×n 的半正交矩阵（m≤n），Frobenius 范数恰好是 √min(m,n)
         target_norm = min(X.size(-2), X.size(-1)) ** 0.5
         current_norm = X.float().norm(dim=(-2, -1), keepdim=True).clamp_min(1e-6)
         X = X * (target_norm / current_norm).to(X.dtype)

@@ -44,8 +44,8 @@ bash script/progress.sh      # 逐章告诉你「我该做哪一章」
 > 想知道这些 failed 到底是什么意思，见 [第 01 章](01-环境与全景图.md) 的
 > 「⚠️ 先搞清楚：你现在看到的『一堆失败』是**正确**的」。
 >
-> `git checkout solution` 后再跑，会看到 `220 passed, 2 skipped` —— 那才是全绿。
-> **在 `main` 上看到 `220 passed` 才说明你走错了分支。**
+> `git checkout solution` 后再跑，会看到 `225 passed, 2 skipped` —— 那才是全绿。
+> **在 `main` 上看到 `225 passed` 才说明你走错了分支。**
 
 `bash script/train_base.sh smoke` 在卷 1-4 敲完之前**跑不通是正常的**
 （它依赖你还没实现的那部分），不用 troubleshoot。
@@ -324,7 +324,7 @@ bash script/chat.sh       smoke   # 交互式聊天
 
 ## 卡住了怎么办
 
-1. **跑测试**：`uv run pytest tests/ -q`。212 个章节判据（另加 10 个判据自检）覆盖了形状、因果性、
+1. **跑测试**：`uv run pytest tests/ -q`。217 个章节判据（另加 10 个判据自检）覆盖了形状、因果性、
    RoPE、KV cache、优化器等最容易出错的地方，挂了就说明你的改动引入了 bug。
 2. **看注释**：本项目的代码注释密度很高，尤其是「为什么这么写」的部分，
    基本每个非显然的决定都有解释。

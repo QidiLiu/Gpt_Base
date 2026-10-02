@@ -18,7 +18,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from common import log0
+from common import log0, COMPUTE_DTYPE
 
 
 
@@ -84,19 +84,53 @@ def layer_norm(x: torch.Tensor, weight, bias) -> torch.Tensor:
     return F.layer_norm(x, (x.size(-1),), weight, bias, 1e-5)
 
 
+class LayerNormAffine(nn.Module):
+    """
+    带可学习仿射的 LayerNorm，**存在的唯一目的是消融对比**
+    （把 `ModelConfig.norm_type` 改成 "layer" 测 RMSNorm 赢了多少）。
+
+    ⚠⚠ 它必须是一个真正的 nn.Module，而不是「lambda 闭包捕获两个
+    nn.Parameter」—— 2026-10 实测发现后者有两个致命问题：
+
+    (1) **参数不可见**：闭包里的 nn.Parameter 不在 `model.parameters()` 里，
+        所以 **optimizer 永远看不到 γ/β**，它们永远停在初始值 (1, 0)。
+        那样训出来的不是「LayerNorm」，是「没有仿射的 LayerNorm」。
+        `setup_optimizer` 的「参数分组不完整」assert 也抓不到 ——
+        它检查的是「模型有的参数是否都被分组」，方向正好相反。
+
+    (2) **dtype 不匹配**：`torch.ones(ndim)` 默认 float32，
+        而激活是 COMPUTE_DTYPE(bf16) -> `F.layer_norm` 直接抛
+        `expected scalar type BFloat16 but found Float`。
+        CPU 上因为全是 float32 而「碰巧能跑」，掩盖了 (1)。
+    """
+
+    def __init__(self, ndim: int, bias: bool, device=None):
+        super().__init__()
+        # ★ 用 COMPUTE_DTYPE 建：闭包版用默认 float32 是上面 (2) 的根因
+        self.weight = nn.Parameter(torch.ones(ndim, device=device,
+                                             dtype=COMPUTE_DTYPE))
+        self.bias = (nn.Parameter(torch.zeros(ndim, device=device,
+                                              dtype=COMPUTE_DTYPE))
+                     if bias else None)
+
+    def forward(self, x):
+        return layer_norm(x, self.weight, self.bias)
+
+
 def make_norm(cfg, ndim: int, device=None):
     """
     按配置构造归一化层。
 
     RMSNorm 完全无参 -> 返回的是一个函数，不是 nn.Module。
     这样 nn.ModuleList 里就不会有一堆空模块，参数量统计也更干净。
+
+    ⚠ LayerNorm 那条**必须**返回 nn.Module（见 LayerNormAffine 的 docstring）——
+      参数要能被 named_parameters / optimizer 看到。
     """
     if cfg.norm_type == "rms":
         return rms_norm
     if cfg.norm_type == "layer":
-        w = nn.Parameter(torch.ones(ndim, device=device))
-        b = nn.Parameter(torch.zeros(ndim, device=device)) if cfg.use_bias else None
-        return lambda x: layer_norm(x, w, b)
+        return LayerNormAffine(ndim, cfg.use_bias, device)
     raise ValueError(f"未知 norm_type: {cfg.norm_type}")
 
 

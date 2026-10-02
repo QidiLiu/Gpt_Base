@@ -122,6 +122,16 @@ class GPT(nn.Module):
 
         # Uniform(-s, s) 的标准差是 s/√3，所以要乘 √3 才能和 std=s 的 Normal 一样
         s = math.sqrt(3) * cfg.n_embd ** -0.5
+        # ★ norm_type="layer" 时，LayerNorm 的 γ/β 是 nn.Parameter，
+        #   经 meta + to_empty 之后内存是**未初始化**的垃圾 ——
+        #   必须显式写回 (1, 0)。RMSNorm 无参，所以这条对默认档位是 no-op。
+        for block in self.transformer.h:
+            for norm in (block.norm1, block.norm2):
+                if isinstance(norm, nn.Module):
+                    torch.nn.init.ones_(norm.weight)
+                    if getattr(norm, "bias", None) is not None:
+                        torch.nn.init.zeros_(norm.bias)
+
         for block in self.transformer.h:
             torch.nn.init.uniform_(block.attn.c_q.weight, -s, s)
             torch.nn.init.uniform_(block.attn.c_k.weight, -s, s)

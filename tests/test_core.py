@@ -1356,3 +1356,135 @@ def test_muon_subswitch_flags_reach_the_arg_parser():
     for flag in ("--no-polar-express", "--no-muon-eq", "--no-frobenius-snap",
                  "--no-nor-muon", "--no-cautious-wd"):
         assert flag in r.stdout, f"{flag} 没出现在 --help 里 —— 名字拼错了？"
+
+
+# ===========================================================================
+# norm_type="layer" 必须真的可用（第 08 章的消融项）
+#
+# ★ 2026-10 由消融跑批发现：`--norm-type layer` **3 秒就崩**
+#   RuntimeError: expected scalar type BFloat16 but found Float
+#
+# 两个独立的根因：
+#   (1) dtype：make_norm 用 torch.ones(ndim) 建 γ/β，默认 float32，
+#       而激活是 COMPUTE_DTYPE(bf16) -> F.layer_norm 直接抛。
+#       CPU 上全是 float32 所以「碰巧能跑」，掩盖了 (2)。
+#   (2) ★ 更严重：**γ/β 根本没注册进 model.parameters()** ——
+#       旧实现是 `return lambda x: layer_norm(x, w, b)`，闭包捕获。
+#       于是 **optimizer 永远看不到它们**，永远停在 (1, 0)。
+#       那样训出来的不是「LayerNorm」，是「没有可学习仿射的 LayerNorm」。
+#       `setup_optimizer` 的「参数分组不完整」assert 也抓不到 ——
+#       它检查「模型有的参数是否都被分组」，方向正好相反。
+# ===========================================================================
+def _norm_cfg(norm_type):
+    from common.config import build_model_config
+    cfg = build_model_config(2, 16, 8, sequence_len=32, vocab_size=64)
+    cfg.norm_type = norm_type
+    return cfg
+
+
+def test_layer_norm_affine_params_are_registered_and_typed():
+    """
+    ★ γ/β 必须在 `named_parameters()` 里，且 dtype 与 COMPUTE_DTYPE 一致。
+
+    这条守的是上面 (2)：旧实现返回 lambda，参数不可见。
+    """
+    from model.gpt import GPT
+    from common import COMPUTE_DTYPE
+    cfg = _norm_cfg("layer")
+    model = GPT(cfg)
+    names = {n for n, _ in model.named_parameters()}
+    for layer in range(cfg.n_layer):
+        for which in ("norm1", "norm2"):
+            key = f"transformer.h.{layer}.{which}.weight"
+            assert key in names, (
+                f"{key} 不在 named_parameters() 里 —— "
+                "make_norm 又退回闭包实现了？优化器会看不到 γ/β")
+    # dtype 必须跟着 COMPUTE_DTYPE 走，否则 F.layer_norm 在 CUDA 上抛
+    for n, p in model.named_parameters():
+        if ".norm1.weight" in n or ".norm2.weight" in n:
+            assert p.dtype == COMPUTE_DTYPE, (
+                f"{n} 的 dtype 是 {p.dtype}，应为 {COMPUTE_DTYPE} —— "
+                "闭包版用 torch.ones(ndim) 默认 float32，就是这个 bug")
+
+    # 对照：rms 模式确实一个 norm 参数都不该有
+    rms_names = {n for n, _ in GPT(_norm_cfg("rms")).named_parameters()}
+    assert not [n for n in rms_names if ".norm1." in n or ".norm2." in n], \
+        "RMSNorm 是无参的，不该出现 norm1/norm2 参数"
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_layer_norm_runs_on_both_devices(device):
+    """`--norm-type layer` 在 CPU 和 CUDA 上都必须跑得动。"""
+    from model.gpt import GPT
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("没有 CUDA")
+    cfg = _norm_cfg("layer")
+    model = GPT(cfg)
+    model.to_empty(device=device)
+    model.init_weights()          # meta + to_empty 之后必须写回 (1, 0)
+    if device == "cuda":
+        model = model.cuda()
+    x = torch.randint(0, cfg.vocab_size, (2, 32), device=device)
+    out = model(x)
+    assert torch.isfinite(out).all(), f"{device} 上 layer norm 的输出有 inf/nan"
+
+
+def test_layer_norm_gamma_actually_learns():
+    """
+    ★ γ/β 必须真的被优化器更新 —— 旧实现下它们永远停在 1。
+
+    ⚠ **这条判据要跑 3 步而不是 1 步**，原因值得写下来：
+    `init_weights` 把 `c_proj` 和 `mlp.c_proj` **零初始化**（恒等映射 init），
+    所以第 0 步时 dL/d(norm 输出) = W_cproj^T · (...) = **恒为 0**，
+    γ 的梯度也是 0。**这是零初始化输出投影的已知性质，不是 bug。**
+
+    我第一次只跑 1 步就断言「γ/β 不动」，差点去改一条正确的实现。
+    这是本项目「单步测量不可信」的又一个变种，
+    而且这次栽在**自己刚写的修复**上。
+    """
+    from model.gpt import GPT
+    from common.config import OptimConfig
+    from optim.muon import setup_optimizer
+    torch.manual_seed(0)
+    cfg = _norm_cfg("layer")
+    model = GPT(cfg)
+    model.to_empty(device="cpu")
+    model.init_weights()
+    opt = setup_optimizer(model, OptimConfig())
+    norms = {k: v for k, v in model.named_parameters()
+             if ".norm1.weight" in k or ".norm2.weight" in k}
+    assert norms, "前置条件不成立：没有找到任何 norm 参数"
+
+    moved_at = None
+    for step in range(4):
+        x = torch.randint(0, cfg.vocab_size, (2, 32))
+        model(x, x).backward()
+        if step == 0:
+            # 第 0 步梯度为 0 是设计使然（零初始化输出投影），不该在这里断言
+            pass
+        opt.step()
+        opt.zero_grad(set_to_none=True)
+        if moved_at is None and any(
+                not torch.allclose(v.detach(), torch.ones_like(v))
+                for v in norms.values()):
+            moved_at = step
+    assert moved_at is not None, (
+        "训了 4 步，LayerNorm 的 γ 仍然全是 1 —— "
+        "它没被优化器更新（旧闭包实现的症状）")
+    assert moved_at >= 1, (
+        f"γ 在第 {moved_at} 步就动了 —— 第 0 步本该因为 c_proj 零初始化"
+        "而梯度为 0。若这里红了，说明零初始化被改动了")
+
+
+def test_setup_optimizer_sees_layer_norm_params():
+    """γ/β 必须落进某个 param_group —— 否则「注册了但没分组」又是一层静默失效。"""
+    from model.gpt import GPT
+    from common.config import OptimConfig
+    from optim.muon import setup_optimizer
+    cfg = _norm_cfg("layer")
+    model = GPT(cfg)
+    opt = setup_optimizer(model, OptimConfig())
+    in_opt = {id(p) for g in opt.param_groups for p in g["params"]}
+    for n, p in model.named_parameters():
+        if ".norm1.weight" in n or ".norm2.weight" in n:
+            assert id(p) in in_opt, f"{n} 不在任何 param_group 里"

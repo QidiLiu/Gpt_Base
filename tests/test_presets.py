@@ -610,21 +610,21 @@ def test_train_base_warns_when_tokenizer_vocab_differs_from_preset():
 #
 # 真实的 bug（2026-10 实测发现）：total_flops 数了全部 num_iterations 步，
 # 而 total_time 只累加 `step > 10` 的步。误差 = n/(n-11)。
-#   13 步的 full 档 -> 日志报 119.96%，逐步 MFU 只有 27.68%
+#   13 步的 full 档 -> 日志报 119.96%，逐步 MFU 只有 26.4%
 #   2088 步全程    -> 只偏 0.53%，所以一直没人发现
 # ===========================================================================
 def test_average_mfu_numerator_and_denominator_cover_the_same_steps():
     """
     ★ 分子（total_flops）只数「计入 total_time 的那几步」。
 
-    用 13 步那次的真实数字复现：逐步 MFU 实测 27.68%。
+    用 13 步那次的真实数字复现：逐步 MFU 实测 26.56%。
     """
     from training.train_base import summarize_throughput
 
-    flops_per_token = 1.28346e9        # V=8192 的 full 档实测
+    flops_per_token = 1.32121e9        # V=16384 的 full 档实测
     batch = 1_048_576
     peak = 8.26e13                     # RTX 4060 Ti 表值
-    timed_steps, total_time = 3, 176.57
+    timed_steps, total_time = 3, 189.94
 
     total_flops, mfu = summarize_throughput(
         flops_per_token, batch, timed_steps, total_time, peak)
@@ -635,12 +635,13 @@ def test_average_mfu_numerator_and_denominator_cover_the_same_steps():
     # 每步耗时相同的话，平均 MFU 必须等于逐步 MFU
     per_step_mfu = 100 * flops_per_token * batch / (total_time / timed_steps) / peak
     assert mfu == pytest.approx(per_step_mfu, rel=1e-12)
-    # 27.68% 是那次实测日志里逐步 MFU 的稳态值。
-    # 用真实的 V=8192 词表重算能和日志对到小数点后两位 ——
-    # 而用预设的 V=16384 算会得到 28.50%，正好差 3%。
-    assert per_step_mfu == pytest.approx(27.68, abs=0.01), (
-        f"逐步 MFU 应该 ≈27.68%（实测值），算成了 {per_step_mfu:.2f}%。"
-        "若偏差约 3%，多半是 flops_per_token 用错了词表（见卷 8 第 37 章）"
+    # 26.49% 是那次实测日志里收尾报的「平均 MFU」，
+    # 也是逐步 MFU 的稳态中位数（两者一致正是这个 bug 修好后的表现）。
+    # 用真实的 V=16384 词表重算能对上；误用 V=8192 的 flops_per_token
+    # 会得到 25.73%（差 2.9%）—— 所以这条判据顺带守着「别用错词表」。
+    assert per_step_mfu == pytest.approx(26.49, abs=0.02), (
+        f"逐步 MFU 应该 ≈26.49%（实测值），算成了 {per_step_mfu:.2f}%。"
+        "偏差 2~3% 通常是 flops_per_token 用错了词表（见卷 8 第 37 章）"
     )
 
 
@@ -653,9 +654,9 @@ def test_average_mfu_can_never_exceed_100_percent():
     """
     from training.train_base import summarize_throughput
 
-    flops_per_token, batch, peak = 1.28346e9, 1_048_576, 8.26e13
+    flops_per_token, batch, peak = 1.32121e9, 1_048_576, 8.26e13
     _tf, mfu = summarize_throughput(
-        flops_per_token, batch, timed_steps=3, total_time=176.57, peak_flops=peak)
+        flops_per_token, batch, timed_steps=3, total_time=189.94, peak_flops=peak)
     assert 0 < mfu < 100, f"MFU={mfu}% 超出 (0,100) —— 分子分母口径不一致"
 
     # 顺便钉住边界

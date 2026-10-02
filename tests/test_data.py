@@ -56,14 +56,31 @@ def test_special_tokens_are_sequential_tail():
     回归测试：特殊 token 必须占据词表的**最后 9 个 id**，且顺序与
     SPECIAL_TOKENS 一致。因为 BPE 训练时看不到它们，
     它们被追加在普通 token 之后。
+
+    ★ 这里**不能**把普通 token 数写死（这条曾经写死 8183）。
+      8183 不是不变量，它是「当时缓存里那个 tokenizer 的词表大小减 9」。
+      缓存一变（V=8192 -> 16384）判据就红，而它守的东西毫发无损。
+
+      2026-10 实测踩到：修好 tokenizer 缓存那个 bug 之后，
+      ablation/full 真的按 V=16384 训练，这条判据立刻红了 ——
+      **它验证的是缓存状态，不是那个不变量**。
+
+      真正的不变量由下面的循环守住（9 个 id 必须落在 [V-n, V) 且顺序一致）。
+      这里额外只断言「V 是某个预设的合法词表大小」，那是环境无关的。
     """
+    from common.config import PRESETS
+
     tok = get_tokenizer()
     V = tok.get_vocab_size()
     n = len(SPECIAL_TOKENS)
-    assert V - n == 8183, f"普通 token 数应等于 vocab_size - {n}，得到 {V - n}"
+    assert V > n, f"词表必须比特殊 token 多：V={V}, n={n}"
     for i, name in enumerate(SPECIAL_TOKENS):
         assert tok.encode_special(name) == V - n + i, (
             f"{name} 的 id 应是 {V - n + i}，实际 {tok.encode_special(name)}")
+    assert V in {p["vocab_size"] for p in PRESETS.values()}, (
+        f"缓存里这个 tokenizer 的 V={V} 不是任何预设的词表大小 —— "
+        "要么它来自别处，要么某档 _common.sh 的 VOCAB= 被改过"
+    )
 
 
 def test_decode_bytes_length():

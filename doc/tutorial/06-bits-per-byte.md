@@ -591,4 +591,5 @@ CORE 的原理（`nanochat/core_eval.py`）值得预告：
 - ✅ 实现并可视化 BOS-aligned best-fit，理解它为什么丢 token 也划算
 - ✅ 用 bpb 而不是 loss 来衡量模型
 
-**下一卷**开始搭模型：第 07 章「先跑通一个最小 GPT」（尚未写）。
+**下一卷**开始搭模型：
+[第 07 章：先跑通一个最小 GPT](07-先跑通一个最小GPT.md)

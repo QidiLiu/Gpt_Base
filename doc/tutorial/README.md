@@ -203,6 +203,94 @@ src/
 
 ---
 
+## ★ 消融总表
+
+**这是本教程承诺的核心产出物。** 卷 1-4 每章的「★消融实验」都是在往这张表里填一行。
+
+### 怎么跑
+
+```bash
+# 1) 先跑中性基线（必须 --no-resume，否则会被 auto-resume 吞掉，bpb 一模一样）
+bash script/train_base.sh ablation --model-tag d6_base --no-resume
+
+# 2) 一次只改一个变量，每组换个 tag
+bash script/train_base.sh ablation --model-tag d6_norope --no-rope     --no-resume
+bash script/train_base.sh ablation --model-tag d6_nosmear --no-smear   --no-resume
+bash script/train_base.sh ablation --model-tag d6_adv    --muon-advanced --no-resume
+
+# 3) 汇总
+bash scratch/ablation.sh d6_base
+```
+
+**每组实测 39 分钟**（RTX 4060 Ti，3,096 步 / 2.03 亿 token）。
+
+### 中性基线长什么样
+
+基线必须保持**中性**（Muon `simple` + trick 全关），
+否则测出来的是「A 相对 A+B」，单项贡献被稀释：
+
+```
+残差流 trick : 全部关闭（基础架构）
+Muon flavor  : simple（5 步 Newton-Schulz）
+```
+
+### 表模板
+
+| 实验 | 开关 | val_bpb | Δ vs base |
+|---|---|---|---|
+| `d6_base` | （中性基线） | **1.0615** | （基线）|
+| `d6_norope` | `--no-rope` | | |
+| `d6_noqk` | `--no-qk-norm` | | |
+| `d6_nosmear` | `--no-smear` | | |
+| `d6_nobackout` | `--no-backout` | | |
+| `d6_noresid` | `--no-resid-lambdas` | | |
+| `d6_nox0` | `--no-x0-lambdas` | | |
+| `d6_nove` | `--no-value-embeds` | | |
+| `d6_nosoftcap` | `--no-softcap` | | |
+| `d6_tie` | `--tie-embeddings` | | |
+| `d6_layernorm` | `--norm-type layer` | | |
+| `d6_window` | `--window-pattern ...` | | |
+| `d6_shve` | `--shared-value-embeds` | | |
+| `d6_adv` | `--muon-advanced` | | |
+
+**Δ < 0 表示比基线好**（bpb 越低越好）。
+
+### 仓库现状
+
+| | |
+|---|---|
+| `d6_base` | ✅ **已跑**（2026-10，`val_bpb = 1.0615`，Muon simple + trick 全关）|
+| 其余 13 组 | ⬜ **未跑** |
+
+⚠ **表里的每一格「未跑」都是本教程欠你的。**
+各章的结论目前都是**幅度分析或外推**，不是端到端实测 ——
+比如第 26 章说「谨慎 WD 只占梯度项 3%」、第 30 章说
+「momentum warmup 的硬编码 400 占 full 档 19% 训练」，
+都还没有对应的消融行。
+
+### 三条纪律
+
+1. **必须用 `ablation` 档**（`smoke` 档 896 步的 bpb 噪声 ±0.02 大于效应本身）。
+2. **一次只改一个变量。**
+3. **`|Δ| < 0.02` 时重复跑一次**，确认不是初始化随机性。
+
+### 可测开关清单
+
+```
+残差流 5 trick  --no-resid-lambdas --no-x0-lambdas --no-value-embeds
+                 --no-smear --no-backout              （卷 3）
+架构            --no-rope(09) --no-qk-norm(12) --no-softcap(15)
+                 --tie-embeddings(15) --norm-type layer(08)
+                 --window-pattern(20) --shared-value-embeds(18)
+优化器          --muon-advanced(24-26) --muon-weight-decay(26)
+```
+
+⚠ **卷 5-8 是只读章，没有消融行** —— 按设计如此。
+它们的主题（续训、KV cache、终止控制、指标口径）不是「开关关掉看差多少」
+能回答的，而是「读代码时哪里容易看错」。
+
+---
+
 ## 六个入口脚本
 
 ```bash

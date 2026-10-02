@@ -288,7 +288,7 @@ Muon flavor  : simple（5 步 Newton-Schulz）
 | `d6_nosoftcap` | `--no-softcap` | 1.0643 | +0.0028 |
 | `d6_noqk` | `--no-qk-norm` | 1.0665 | +0.0050 |
 | `d6_resid` | `--use-resid-lambdas` | 1.0676 | +0.0061 |
-| `d6_layernorm` | `--norm-type layer` | （见下）| |
+| `d6_layernorm` | `--norm-type layer` | 1.0629 | +0.0014 |
 | `d6_tie` | `--tie-embeddings` | 1.0882 | **+0.0267** ✅ |
 | `d6_norope` | `--no-rope` | 1.1145 | **+0.0530** ✅ |
 
@@ -330,6 +330,22 @@ Muon 的行为可能不同（见第 22 章：谱越宽，Muon 的优势越大）
 
 `--tie-embeddings` 让 bpb 上升 0.0267，是第二显著的单项劣化。
 `full` 档默认**不开**，这个选择是对的。
+
+### 第四个结论：RMSNorm vs LayerNorm 没有可测差异
+
+`--norm-type layer` 的 Δ = **+0.0014**，完全在噪声内。
+
+⚠ **而这一组是修完 bug 才跑出来的**（见下）。第一次它 3 秒就崩。
+
+所以第 08 章那个问题 —— 「RMSNorm 到底赢了多少」——
+**在 d6 档 / 2 亿 token 上答案是「测不出来」。**
+
+RMSNorm 的真实优势在别处，而本章讲的那些都测得到：
+- **零参数**（LayerNorm 的 γ+β 是 `2 × hidden_dim`）
+- **少一次减均值**（少一遍归约）
+- **不需要 bias**
+
+**在能测出 bpb 差异之前，那些都是「更省」而不是「更好」。**
 
 ### 未解决的：噪声带内的项需要复跑
 

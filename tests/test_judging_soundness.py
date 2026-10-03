@@ -420,3 +420,145 @@ def test_scratch_gating_table_matches_reality():
         "scratch 门禁表与实际行为不符：\n  " + "\n  ".join(mismatches)
         + "\n要么改代码，要么改 README 的状态标注。"
     )
+
+
+# ===========================================================================
+# 消融显著性阈值必须是实测值，不能是拍脑袋的经验值
+#
+# ★ 2026-10 审计发现：纪律第 3 条「|Δ| < 0.02 时重复跑一次」里的 0.02
+#   **从来没有被测量过** —— 它从项目最早的 commit (7319830) 就在了。
+#
+#   实测（3 次同配置 + 1 次换初始化，每组 39 分钟）：
+#       同种子样本标准差 σ = 0.000134
+#       σ_Δ = √2·σ         = 0.000190
+#   0.02 比真实噪声大 **46 倍**。后果：13 项消融里有 11 项
+#   被误判成「在噪声带内 / 测不出差异」，而它们其实是 7σ~279σ 的真实效应。
+#
+#   这是本项目「不把具体取值当规律」那条纪律的一个实例：
+#   **连判断显著性的阈值本身，都曾经是一个没测过的取值。**
+# ===========================================================================
+def _noise_floor_json():
+    import json
+    from pathlib import Path
+    return json.loads((Path(__file__).resolve().parents[1]
+                       / "scratch" / "ablation_noise_floor.json").read_text())
+
+
+def test_ablation_threshold_is_the_measured_one_not_the_historical_guess():
+    """
+    ★ 阈值必须是实测的 0.001，不能回退成 0.02。
+
+    0.02 这个数从最早的 commit 就在，是**经验值**。实测噪声只有它的 1/150。
+    """
+    data = _noise_floor_json()
+    derived = data["derived"]
+    assert derived["threshold"] == 0.001, (
+        f"显著性阈值变成了 {derived['threshold']} —— "
+        "实测值是 0.001（σ_Δ = 0.000190，5.3σ）。"
+        "如果确实要改，请同时更新 scratch/ablation.sh 和全部教程章节")
+    # 保留旧值作为记录，并断言「差 46 倍」这个事实本身没被悄悄改掉
+    assert derived["old_unmeasured_threshold"] == 0.02, \
+        "旧的未验证阈值应保留为 0.02 作为记录"
+    assert derived["old_over_measured_ratio"] == 46, \
+        "「0.02 比实测大 46 倍」是文档里反复引用的数字，改它要同步改文档"
+
+
+def test_noise_floor_numbers_match_the_actual_run_artifacts():
+    """
+    ★ `ablation_noise_floor.json` 里的每个数字必须与
+       `runs/base_checkpoints/*/meta_*.json` 对得上。
+
+    否则那份 JSON 会变成「看起来像实测的编造数据」——
+    这正是本项目要消灭的东西。
+    """
+    import glob
+    import json as _json
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    data = _noise_floor_json()
+
+    checked = 0
+    for section in ("runs_same_seed", "run_different_seed"):
+        for tag, recorded in data[section].items():
+            if tag.startswith("_"):
+                continue
+            files = sorted(glob.glob(str(
+                root / "runs" / "base_checkpoints" / tag / "meta_*.json")))
+            assert files, (
+                f"ablation_noise_floor.json 记了 {tag}，但 runs/ 下没有它的存档 —— "
+                "要么跑批被删了，要么这个数字是编的")
+            actual = _json.load(open(files[-1]))["best_val_bpb"]
+            assert abs(actual - recorded) < 1e-12, (
+                f"{tag} 的真实 val_bpb 是 {actual!r}，"
+                f"而 ablation_noise_floor.json 记的是 {recorded!r}")
+            checked += 1
+    assert checked == 4, f"应核对 4 次跑批，实际核对了 {checked} 次"
+
+
+def test_every_ablation_measurement_on_disk_is_listed_in_the_docs():
+    """
+    ★ 跑过的消融必须在文档里有一行，不能悄悄多跑一堆没人看的数据。
+
+    反过来也成立：文档里出现的 tag 必须在磁盘上有对应存档。
+    """
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    on_disk = {p.name for p in (root / "runs" / "base_checkpoints").iterdir()
+               if p.is_dir()} if (root / "runs" / "base_checkpoints").is_dir() else set()
+    doc = (root / "doc" / "tutorial" / "README.md").read_text()
+
+    tags = [t for t in sorted(on_disk) if t.startswith("d6_")]
+    assert tags, "磁盘上没有任何 d6_* 消融存档 —— 跑批结果被清掉了？"
+    missing = [t for t in tags if t not in doc]
+    assert not missing, (
+        f"这些消融合跑过但文档里没有：{missing} —— "
+        "实测数据必须出现在教程里，否则等于没跑")
+
+    # 文档里提到的 d6_* tag 必须真有存档
+    mentioned = set(re.findall(r"`(d6_[a-z0-9_]+)`", doc))
+    phantom = sorted(t for t in mentioned if t not in on_disk)
+    assert not phantom, f"文档里引用了磁盘上不存在的消融：{phantom}"
+
+
+def test_ablation_sh_discipline_matches_the_measured_threshold():
+    """
+    `scratch/ablation.sh` 里印给用户看的纪律，必须是实测阈值 0.001。
+    """
+    from pathlib import Path
+    sh = (Path(__file__).resolve().parents[1]
+          / "scratch" / "ablation.sh").read_text()
+    assert "|Δ| < 0.001" in sh, \
+        "ablation.sh 的纪律第 3 条没有用实测阈值 0.001"
+    assert "|Δ| < 0.02" not in sh, \
+        "ablation.sh 还印着未验证的 0.02 阈值"
+
+
+def test_tutorials_do_not_assert_the_unmeasured_threshold_as_fact():
+    """
+    ★ 教程里不得把 0.02 当成既成事实陈述。
+
+    允许「早期文档写的是 0.02，那没测过」这类**更正说明**，
+    但不允许「噪声带 ±0.02」这种断言式表述。
+    """
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    # 这些是「正在更正这句话」的章节，允许出现
+    excused = {
+        "00-如何使用本教程.md", "06-bits-per-byte.md", "08-RMSNorm.md",
+        "10-注意力三步曲.md", "12-QK-Norm与GQA.md", "README.md",
+    }
+    offenders = []
+    for md in sorted((root / "doc" / "tutorial").glob("*.md")):
+        if md.name in excused or md.name == "README.md":
+            continue
+        for lineno, line in enumerate(md.read_text().splitlines(), 1):
+            if "0.02" not in line:
+                continue
+            # 断言式表述：噪声带 / 落在噪声内 …… 0.02
+            if re.search(r"噪声(带)?[^。]{0,12}0\.02|0\.02[^。]{0,12}噪声", line):
+                offenders.append(f"{md.name}:{lineno}: {line.strip()[:90]}")
+    assert not offenders, (
+        "这些行把未验证的 0.02 当成事实：\n  " + "\n  ".join(offenders) +
+        "\n  真实阈值是实测的 0.001（σ_Δ = 0.000190）。")

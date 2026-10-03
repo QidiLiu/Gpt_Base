@@ -415,7 +415,8 @@ bash script/train_base.sh ablation --no-resume --model-tag d6_norope --no-rope
 bash scratch/ablation.sh d6_rope
 ```
 
-**预期**：Δ bpb 非常大（远超 `ablation` 档的 ±0.02 噪声）。
+**实测（2026-10）**：Δ bpb = **+0.0530，279σ** —— 全表最大的单项劣化。
+（`ablation` 档实测 σ_Δ = 0.000190，显著性阈值 0.001。）
 没有位置信息的语言模型在 bpb 上会明显更差，因为它连「这个词在
 上一句话的末尾」这种最基本的局部结构都无法表达。
 

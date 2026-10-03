@@ -1,0 +1,53 @@
+{
+  "_comment": [
+    "消融显著性阈值的实测依据。2026-10 测的。",
+    "在写这份数据之前，纪律第 3 条的阈值写的是 0.02 ——",
+    "那是从项目最早的 commit (7319830) 起就在的**经验值，从未被测量**。",
+    "实测发现它比真实噪声大 46 倍，导致 13 项消融里有 11 项",
+    "被误判成「在噪声带内 / 测不出差异」。",
+    "",
+    "复现：每组 39 分钟，共 4 组约 2.6 小时。",
+    "  PYTHONPATH=src python -m training.train_base --mode ablation \\",
+    "      --model-tag base_r1 --no-resume",
+    "  ... --seed 7   （换初始化）",
+    "统计见 scratch/measure_noise_floor.py"
+  ],
+  "measured_at": "2026-10",
+  "hardware": "RTX 4060 Ti 16GB (SM 8.9)",
+  "preset": "ablation",
+  "config": {
+    "n_layer": 6, "n_embd": 384, "seq_len": 1024, "vocab_size": 16384,
+    "steps": 3096, "tokens": 202899456, "tricks": "全关", "muon": "simple"
+  },
+  "runs_same_seed": {
+    "d6_base":  1.0614994759509104,
+    "base_r1":  1.0616730714008746,
+    "base_r2":  1.0614084297727358,
+    "_note": "d6_base/base_r1/base_r2 是同配置的 3 次运行（形状派生种子 6384）"
+  },
+  "run_different_seed": {
+    "base_s7": 1.0619637203869903,
+    "_note": "--seed 7，用于分离「初始化」与「run-to-run」两个噪声源"
+  },
+  "derived": {
+    "same_seed_mean": 1.0615269803748403,
+    "same_seed_stdev": 0.0001344,
+    "init_shift": 0.000437,
+    "init_shift_in_sigma": 3.2,
+    "sigma_delta": 0.000190,
+    "sigma_delta_formula": "sqrt(2) * same_seed_stdev  （两个各跑一次的配置相减）",
+    "threshold": 0.001,
+    "threshold_in_sigma": 5.3,
+    "old_unmeasured_threshold": 0.02,
+    "old_over_measured_ratio": 46
+  },
+  "verdict": {
+    "genuinely_unmeasurable": ["d6_shve"],
+    "real_but_small": ["d6_layernorm", "d6_adv"],
+    "real_and_large": [
+      "d6_norope", "d6_tie", "d6_resid", "d6_noqk",
+      "d6_nosoftcap", "d6_smear", "d6_ve", "d6_alltricks",
+      "d6_backout", "d6_x0"
+    ]
+  }
+}

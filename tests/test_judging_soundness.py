@@ -293,6 +293,75 @@ def test_no_hardcoded_foreign_home_paths():
     )
 
 
+# ===========================================================================
+# 4b. 全仓文本不许有编码损坏（mojibake）
+#
+# ★ 真实事故（2026-10 审计发现）：两处 UTF-8 字符损坏已提交进仓库 ——
+#     src/common/utils.py:150   「唯一的随机来源就是那<?>种子」
+#     tests/test_presets.py:330 「模型存到了意外<?>目录」
+#   两处都是**合法的 U+FFFD 编码**（`strict` 解码能通过），所以不是编码异常，
+#   而是写入时就已损坏并提交了。引入者分别是 0cbee16 和 18823ef，
+#   后者一路被 4 个 commit 带过而无人发现。
+#
+# 为什么之前没抓到：本文件里的编码检查绑在
+# `test_no_hardcoded_foreign_home_paths` 的**路径模式**上（只扫 scratch/*.py
+# 的 `/home/xxx/Dev/`），不是通用检查 —— src/、tests/、doc/ 都不在范围内。
+#
+# 价值高于它修的那两个字：把「字符损坏」从一次性清理变成持续守护。
+# ===========================================================================
+# 只扫「我们写的」文本。排除依赖、产物、缓存、以及本文件自己
+# （本文件的 docstring 里就故意包含 U+FFFD 的字面说明）。
+_TEXT_GLOBS = ("src/**/*.py", "tests/**/*.py", "script/*.sh", "scratch/*.py",
+               "scratch/*.json", "doc/**/*.md", "*.md", "*.toml")
+_TEXT_EXCLUDE_DIRS = {".venv", ".git", ".ruff_cache", ".pytest_cache",
+                      "__pycache__", "runs", "node_modules"}
+_TEXT_SELF = pathlib.Path(__file__).name
+
+
+def _iter_repo_text_files():
+    seen = set()
+    for pattern in _TEXT_GLOBS:
+        for p in sorted(REPO.glob(pattern)):
+            if any(part in _TEXT_EXCLUDE_DIRS for part in p.parts):
+                continue
+            if p.name == _TEXT_SELF or not p.is_file():
+                continue
+            if p in seen:
+                continue
+            seen.add(p)
+            yield p
+
+
+def test_no_mojibake_anywhere_in_tracked_text():
+    """全仓文本文件不得含 U+FFFD（替换字符）或非 UTF-8 编码。
+
+    损坏的字节通常在写文件时就已变成 U+FFFD 并被提交，所以严格解码
+    **不会报错** —— 必须显式扫这个码位。
+    """
+    offenders = []
+    for p in _iter_repo_text_files():
+        raw = p.read_bytes()
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as e:
+            offenders.append(f"{p.relative_to(REPO)}: 非法 UTF-8（{e.reason}）")
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if "\ufffd" in line:
+                # 报告整行，并把损坏位置标出来便于定位
+                col = line.index("\ufffd") + 1
+                n_bad = len(line) - len(line.replace("\ufffd", ""))
+                excerpt = line.strip()[:60]
+                offenders.append(
+                    f"{p.relative_to(REPO)}:{lineno}: {n_bad} 个 U+FFFD "
+                    f"(第 {col} 列起) | {excerpt}")
+    assert not offenders, (
+        "这些文件有编码损坏（U+FFFD 是「无法解码的字节」的替换字符）：\n  "
+        + "\n  ".join(offenders)
+        + "\n  损坏通常在写入时就发生并被提交，严格解码抓不到 —— "
+          "只能显式扫这个码位。")
+
+
 def test_entry_scripts_have_a_working_default_mode():
     """入口脚本必须真的支持「不传参数」——它们的注释都写着「默认 smoke」。
 
@@ -431,8 +500,9 @@ def test_scratch_gating_table_matches_reality():
 #   实测（3 次同配置 + 1 次换初始化，每组 39 分钟）：
 #       同种子样本标准差 σ = 0.000134
 #       σ_Δ = √2·σ         = 0.000190
-#   0.02 比真实噪声大 **46 倍**。后果：13 项消融里有 11 项
-#   被误判成「在噪声带内 / 测不出差异」，而它们其实是 7σ~279σ 的真实效应。
+#   0.02 比真实噪声大 **105 倍**（分母是 σ_Δ，见下面的 ratios_vs_old_threshold）。
+#   后果：13 项消融里有 11 项被误判成「在噪声带内 / 测不出差异」，
+#   而它们其实是 7σ~279σ 的真实效应。
 #
 #   这是本项目「不把具体取值当规律」那条纪律的一个实例：
 #   **连判断显著性的阈值本身，都曾经是一个没测过的取值。**
@@ -448,7 +518,8 @@ def test_ablation_threshold_is_the_measured_one_not_the_historical_guess():
     """
     ★ 阈值必须是实测的 0.001，不能回退成 0.02。
 
-    0.02 这个数从最早的 commit 就在，是**经验值**。实测噪声只有它的 1/150。
+    0.02 这个数从最早的 commit 就在，是**经验值**。实测噪声只有它的 1/105
+    （分母 σ_Δ = 0.000190，判定 |Δ| 用的分母）。
     """
     data = _noise_floor_json()
     derived = data["derived"]
@@ -456,11 +527,163 @@ def test_ablation_threshold_is_the_measured_one_not_the_historical_guess():
         f"显著性阈值变成了 {derived['threshold']} —— "
         "实测值是 0.001（σ_Δ = 0.000190，5.3σ）。"
         "如果确实要改，请同时更新 scratch/ablation.sh 和全部教程章节")
-    # 保留旧值作为记录，并断言「差 46 倍」这个事实本身没被悄悄改掉
+    # 保留旧值作为记录
     assert derived["old_unmeasured_threshold"] == 0.02, \
         "旧的未验证阈值应保留为 0.02 作为记录"
-    assert derived["old_over_measured_ratio"] == 46, \
-        "「0.02 比实测大 46 倍」是文档里反复引用的数字，改它要同步改文档"
+
+
+def test_ratio_claims_are_recomputable_from_their_denominators():
+    """
+    ★★ 「旧阈值比噪声大 N 倍」这个说法，N 必须能由分母**重算**出来。
+
+    真实事故：0.02 ÷ 某个噪声值可以算出三个都合法的倍数 ——
+        ÷ σ_Δ = 0.000190 → 105 倍  ← 判定 |Δ| 用这个（项目口径）
+        ÷ σ   = 0.000134 → 149 倍  ← 单次跑本身的样本标准差
+        ÷ 偏移 = 0.000437 →  46 倍  ← 换初始化实测到的最大系统性偏移
+
+    而本仓库历史上同时出现过「46 倍」和「150 倍」，**都没写分母**，
+    读者无从判断说的是哪个 —— 三者差了近 3 倍。
+
+    所以这里不比对硬编码的字面量，而是**拿分母重算一遍**：
+    改了任何一个分母、或手改了任何一个倍数，判据都会立刻报警。
+    """
+    d = _noise_floor_json()["derived"]
+    r = d["ratios_vs_old_threshold"]
+    old = d["old_unmeasured_threshold"]
+
+    # σ_Δ 必须是 √2·σ（两个独立配置相减的合成噪声）
+    assert d["sigma_delta"] == pytest.approx(d["same_seed_stdev"] * 2 ** 0.5, abs=1e-6), (
+        f"σ_Δ={d['sigma_delta']} 不等于 √2·σ={d['same_seed_stdev'] * 2 ** 0.5:.6f}")
+
+    for key, denom, what in [
+        ("vs_sigma_delta", d["sigma_delta"], "判定 |Δ| 用的合成噪声"),
+        ("vs_same_seed_stdev", d["same_seed_stdev"], "单次跑的样本标准差"),
+        ("vs_init_shift", d["init_shift"], "换初始化的最大系统性偏移"),
+    ]:
+        assert key in r, f"ratios_vs_old_threshold 缺了 {key}"
+        assert r[key] == pytest.approx(old / denom, abs=0.5), (
+            f"{key} 记的是 {r[key]}，但 0.02 ÷ {denom:.6f}"
+            f"（{what}）= {old / denom:.1f}。"
+            "倍数必须与分母自洽 —— 请重算，不要手改字面量")
+
+    # 阈值自述的 σ 倍数也要与 σ_Δ 自洽
+    assert d["threshold_in_sigma"] == pytest.approx(d["threshold"] / d["sigma_delta"], abs=0.05), (
+        f"threshold_in_sigma={d['threshold_in_sigma']}，"
+        f"但 threshold÷σ_Δ={d['threshold'] / d['sigma_delta']:.2f}")
+
+    # 权威口径必须是 σ_Δ，且文档里的头条数字要与之相符
+    assert d["authoritative_ratio"] == "vs_sigma_delta", (
+        "判定 |Δ| 的权威口径是 vs_sigma_delta（分母 σ_Δ）。"
+        "若要改口径，请一并更新 README.md / doc/tutorial/README.md 的头条倍数")
+
+
+def test_ratio_claims_in_docs_always_name_their_denominator():
+    """
+    ★ 文档里出现「N 倍」这个说法时，必须同时说明分母。
+
+    「0.02 比噪声大 46 倍」单独出现是无意义的：读者无法判断分母是
+    σ_Δ、σ 还是换初始化的偏移，而三者差了近 3 倍 —— 结论强度完全不同
+    （105 倍是严格口径，46 倍是最保守口径）。
+    """
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    docs = [root / "README.md"] + sorted((root / "doc" / "tutorial").glob("*.md"))
+
+    # 「N 倍」附近必须出现分母说明，或者这一行本来就在否定/更正它
+    denominators = ("σ_Δ", "σ_Δ", "0.000190", "0.000134", "0.000437",
+                    "分母", "sigma_delta")
+    offenders = []
+    for md in docs:
+        for lineno, line in enumerate(md.read_text().splitlines(), 1):
+            if not re.search(r"(46|105|149|150)\s*倍", line):
+                continue
+            if any(k in line for k in denominators):
+                continue
+            # 允许「历史上同时出现过 46 倍和 150 倍」这类元叙述
+            if any(k in line for k in ("历史", "同时出现", "而不是", "而非")):
+                continue
+            offenders.append(f"{md.relative_to(root)}:{lineno}: {line.strip()[:88]}")
+    assert not offenders, (
+        "这些行报了倍数却没写分母（σ_Δ / σ / 偏移 三者差近 3 倍）：\n  "
+        + "\n  ".join(offenders))
+
+
+# ===========================================================================
+# 4c. pytest 结果声明必须与单一事实源一致
+#
+# ★ 真实事故：三处「main 分支应该输出 69 failed, 116 passed, 7 skipped」
+#   腐化了（实际是 71/125/8）却没人发现，两层原因：
+#
+#   (1) scratch/audit_docs.py 的正则只认「反引号 + N passed」一种形状，
+#       骨架态声明的「N failed, M passed」结构上就匹配不到（已修，见该文件）。
+#   (2) ★ 更根本：**骨架态的数字在 solution 分支上根本无法验证** ——
+#       audit_docs.py 的 LEGAL 集合由「当前分支实测」构建，在答案分支上跑
+#       永远验不到骨架态的数字。所以光修正则不够。
+#
+# 修法：把两个分支的预期数字登记进 scratch/pytest_expectations.json，
+#       然后本判据要求**文档里所有声明必须与它逐字一致**。
+#       这样在任何一个分支上都能抓到「某一处单独腐化」。
+# ===========================================================================
+def _pytest_expectations():
+    import json as _json
+    return _json.loads((pathlib.Path(__file__).resolve().parents[1]
+                        / "scratch" / "pytest_expectations.json").read_text())
+
+
+def test_skeleton_state_claims_are_consistent_across_docs():
+    """文档里所有 pytest 结果声明，必须与 scratch/pytest_expectations.json 一致。
+
+    单一事实源是那个 JSON；本判据保证文档不偏离它。
+    ★ 注意它是**跨分支可用**的：不依赖当前分支实测，所以骨架态的
+      数字在答案分支上同样受守护。
+    """
+    root = pathlib.Path(__file__).resolve().parents[1]
+    states = _pytest_expectations()["states"]
+    docs = [root / "README.md"] + sorted((root / "doc" / "tutorial").glob("*.md"))
+
+    # 骨架态声明：「N failed, M passed, K skipped」（failed 在前）
+    skel_re = re.compile(r"(?<![\d.])(\d+)\s+failed,\s*(\d+)\s+passed"
+                         r"(?:\s*,\s*(\d+)\s+skipped)?")
+    # 答案态声明：「M passed, K skipped」
+    ans_re = re.compile(r"(?<![\d.])(\d+)\s+passed(?:,\s*(\d+)\s+skipped)?")
+
+    want_s = states["skeleton"]
+    want_a = states["solution"]
+    found_skel, found_ans = [], []
+
+    for md in docs:
+        text = md.read_text()
+        # 先把骨架态的匹配挖掉，剩下的才算答案态候选
+        skel_hits = list(skel_re.finditer(text))
+        masked = text
+        for m in reversed(skel_hits):
+            masked = masked[:m.start()] + "\x00" * (m.end() - m.start()) + masked[m.end():]
+        for m in skel_hits:
+            got = (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0))
+            want = (int(want_s["failed"]), int(want_s["passed"]), int(want_s["skipped"]))
+            if got != want:
+                line = text[:m.start()].count("\n") + 1
+                found_skel.append(
+                    f"{md.relative_to(root)}:{line}: 骨架态声明 {got[0]} failed, "
+                    f"{got[1]} passed, {got[2]} skipped ≠ 登记值 "
+                    f"{want[0]}/{want[1]}/{want[2]}")
+        for m in ans_re.finditer(masked):
+            cp, ck = int(m.group(1)), int(m.group(2) or 0)
+            # 「全绿」的写法（不带 skipped）也常见，放行
+            if (cp, ck) in ((int(want_a["passed"]), int(want_a["skipped"])),
+                            (int(want_a["passed"]), 0)):
+                continue
+            line = text[:m.start()].count("\n") + 1
+            found_ans.append(
+                f"{md.relative_to(root)}:{line}: 答案态声明 {cp} passed"
+                + (f", {ck} skipped" if ck else "")
+                + f" ≠ 登记值 {want_a['passed']} passed, {want_a['skipped']} skipped")
+
+    assert not found_skel and not found_ans, (
+        "这些 pytest 结果声明与 scratch/pytest_expectations.json 不一致：\n  "
+        + "\n  ".join(found_skel + found_ans)
+        + "\n  ★ 单一事实源是那个 JSON。改判据数量后请在两个分支各重跑一次，"
+          "然后同步 JSON 与 doc/、README.md。")
 
 
 def test_noise_floor_numbers_match_the_actual_run_artifacts():

@@ -5,6 +5,7 @@
 这个脚本本身也是给维护者用的：改了代码就跑一遍。
 """
 import ast
+import json
 import pathlib
 import re
 import subprocess
@@ -107,24 +108,64 @@ else:
     np_, nf_ = _counts(actual)
     # 合法状态有两套口径，文档里两种写法都算对：
     #   章节口径（只跑 9 个判据文件）：骨架态有 failed，答案态全通过
-    #   全量口径（pytest tests/）：额外包含 test_judging_soundness 的 10 个，
+    #   全量口径（pytest tests/）：额外包含 test_judging_soundness 的 17 个，
     #                            它们在骨架态/答案态之间会自动 skip
     LEGAL = {(np_, nf_), (total, 0)}
     if _full:
         LEGAL.add(_counts(_full))
+
+    # ★ 骨架态的数字**在当前分支上验证不了**（LEGAL 由本分支实测构建），
+    #   所以额外把 scratch/pytest_expectations.json 里登记的另一分支数字
+    #   也算作合法。单一事实源在那里，判据 test_skeleton_state_claims_
+    #   _are_consistent_across_docs 负责守住它与文档一致。
+    EXPECT = ROOT / "scratch" / "pytest_expectations.json"
+    other_legal = set()
+    if EXPECT.exists():
+        states = json.loads(EXPECT.read_text())["states"]
+        for name, v in states.items():
+            other_legal.add((int(v["passed"]), int(v["failed"])))
+            if (int(v["passed"]), int(v["failed"])) == (np_, nf_):
+                other_legal.discard((int(v["passed"]), int(v["failed"])))
+
+    # pytest 摘要有**两种顺序**，两种都要认（下面 CLAIM 的注释解释了为什么
+    # 不能只认一种 —— 那正是骨架态那三处声明腐化半年没被发现的原因）：
+    #   骨架态  "71 failed, 125 passed, 8 skipped"   ← failed 在前
+    #   答案态  "239 passed, 2 skipped"              ← 只有 passed
+    # 旧正则 r"`(\d+) passed(?:, (\d+) failed)?`" 只认后一种，于是
+    #   · 骨架态声明（failed 在前）结构上匹配不到
+    #   · README.md 里那行在 ```bash 代码块里、没有反引号，也匹配不到
+    # 现在：两种顺序都认，且不强依赖反引号（代码块里的声明同样要查）。
+    # ⚠ 「failed 在前」的形状必须**排在前面**：正则从左往右扫，
+    #   若先试 "M passed"，遇到 "71 failed, 125 passed" 时会在中间的
+    #   "125 passed" 上先匹配成功，于是抓到的只是片段、且恰好在
+    #   骨架态三元组里报出假的 "125 passed"。这个坑踩过一次。
+    CLAIM = re.compile(
+        r"(?<![\d.])(\d+)\s+failed,\s*(\d+)\s+passed"   # 1=failed 2=passed
+        r"(?:\s*[,，]\s*(\d+)\s+skipped)?"             # 3=skipped
+        r"|(?<![\d.])(\d+)\s+passed"                   # 4=passed
+        r"(?:,\s*(\d+)\s+failed)?"                     # 5=failed
+        r"(?:,\s*(\d+)\s+skipped)?"                    # 6=skipped
+    )
+
     for p in docs:
         s = p.read_text()
-        for m in re.finditer(r"`(\d+) passed(?:, (\d+) failed)?`", s):
-            cp, cf = int(m.group(1)), int(m.group(2) or 0)
-            if (cp, cf) not in LEGAL:
-                other = "solution" if branch == "main" else "main"
-                note(False, str(p.relative_to(ROOT)),
-                     f"写了 `{cp} passed{', ' + str(cf) + ' failed' if cf else ''}`，"
-                     f"当前分支（{branch}）实际 "
-                     f"`{' '.join(actual.split(' in ')[0].split())}`"
-                     f"（章节口径 {np_} passed / {nf_} failed，"
-                     f"全量口径 {_full or '跑不了'}）"
-                     f"（{other} 分支是 {total} passed）")
+        for m in CLAIM.finditer(s):
+            if m.group(1):                        # "N failed, M passed" 形状
+                cf, cp = int(m.group(1)), int(m.group(2))
+                shape = f"{cf} failed, {cp} passed"
+            else:                                 # "M passed[, N failed]" 形状
+                cp, cf = int(m.group(4)), int(m.group(5) or 0)
+                shape = (f"{cp} passed, {cf} failed" if cf else f"{cp} passed")
+            if (cp, cf) in LEGAL or (cp, cf) in other_legal:
+                continue
+            other = "solution" if branch == "main" else "main"
+            note(False, str(p.relative_to(ROOT)),
+                 f"写了 `{shape}`，"
+                 f"当前分支（{branch}）实际 "
+                 f"`{' '.join(actual.split(' in ')[0].split())}`"
+                 f"（章节口径 {np_} passed / {nf_} failed，"
+                 f"全量口径 {_full or '跑不了'}）"
+                 f"（{other} 分支的数字登记在 scratch/pytest_expectations.json）")
 
 # ── 3. 教程里引用的文件是否存在 ───────────────────────────────
 for p in docs:

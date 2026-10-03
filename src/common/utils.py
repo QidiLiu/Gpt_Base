@@ -147,7 +147,7 @@ def compute_init(device_type: str = "cuda", seed: int | None = None):
       · seed 写死 42 -> 每次运行的权重初始化完全相同
       · dataloader 按顺序读 row group（数据集本身已预打乱）-> 数据顺序确定
 
-    也就是说**唯一的随机来源就是那��种子**。固定它之后重复跑，
+    也就是说**唯一的随机来源就是那个种子**。固定它之后重复跑，
     测到的只是 GPU 原子操作 / cuDNN 选算法的 nondeterminism，
     **测不到「换一个初始化会怎样」** —— 而那正是纪律要排除的东西。
 

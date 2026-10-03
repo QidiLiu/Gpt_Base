@@ -200,7 +200,7 @@ def apply_overrides(cfg, args) -> None:
 # ===========================================================================
 # 三条调度曲线（教程卷5（只读））
 # ===========================================================================
-def make_schedulers(train_cfg, num_iterations: int, weight_decay_final: float):
+def make_schedulers(train_cfg, num_iterations: int, weight_decay_peak: float):
     """
     返回三个调度函数：
 
@@ -260,20 +260,25 @@ def make_schedulers(train_cfg, num_iterations: int, weight_decay_final: float):
         """
         余弦衰减到 0。
 
-        `weight_decay_final` 是**缩放后的峰值**（来自 resolve_scaling 的
-        weight_decay_scaled），不是「终点值」。曲线形状：
-            step 0        -> peak × 1.0
-            step n/2      -> peak × 0.5
-            step n        -> 0
+        ⚠ 形参叫 `weight_decay_peak`：**peak 指缩放后的峰值，不是终点值**。
+          它来自 resolve_scaling 的 weight_decay_scaled（λ_ref 经 T_epoch 缩放
+          后的结果）。曲线形状：
+              step 0        -> peak × 1.0
+              step n/2      -> peak × 0.5
+              step n        -> 0
+
+          旧名 `weight_decay_final` 与语义相反（final 读起来像「终点值」），
+          而曲线实际是衰减**到** 0 —— 名字盖着相反的含义，已于 2026-10 改名。
+          本项目同类教训见 orthogonalize.py 的 use_muon_plus / use_frobenius_snap。
 
         注：TrainConfig 里曾有个 weight_decay_final_frac 想表达「末尾停在
         peak 的某个比例」，但它从未被任何代码读取（grep 全仓只有定义行），
         已删除。真要那个行为，把这里改成
-            weight_decay_final * (frac + (1 - frac) * cos)
+            weight_decay_peak * (frac + (1 - frac) * cos)
         —— 但那是一个从未验证过的调度形状，别顺手加。
         """
         cos = 0.5 * (1 + math.cos(math.pi * min(step, num_iterations) / num_iterations))
-        return cos * weight_decay_final
+        return cos * weight_decay_peak
 
     return lr_mult, muon_momentum, weight_decay
 

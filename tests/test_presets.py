@@ -327,7 +327,7 @@ def test_common_sh_matches_presets():
 
     为什么需要这个测试：bash 读不到 Python 的 PRESETS，所以两份映射必然
     是同一个事实的两份**副本**。副本会漂移 —— 而且漂移了不报错，只表现为
-    「模型存到了意外���目录」或「tokenizer 词表对不上」这种下游怪异现象。
+    「模型存到了意外的目录」或「tokenizer 词表对不上」这种下游怪异现象。
 
     这是本项目一贯的做法：可证伪的声明就用可证伪的方式守住
     （见 tests/test_judging_soundness.py）。

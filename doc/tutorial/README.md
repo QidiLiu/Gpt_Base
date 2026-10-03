@@ -25,7 +25,7 @@
 ```bash
 cd ~/Dev/Gpt_Base
 uv sync                      # 建 .venv，torch 走 cu132
-uv run pytest tests/ -q      # main 分支：69 failed, 116 passed, 7 skipped
+uv run pytest tests/ -q      # main 分支：71 failed, 125 passed, 8 skipped
 bash script/progress.sh      # 逐章告诉你「我该做哪一章」
 ```
 
@@ -44,8 +44,8 @@ bash script/progress.sh      # 逐章告诉你「我该做哪一章」
 > 想知道这些 failed 到底是什么意思，见 [第 01 章](01-环境与全景图.md) 的
 > 「⚠️ 先搞清楚：你现在看到的『一堆失败』是**正确**的」。
 >
-> `git checkout solution` 后再跑，会看到 `239 passed, 2 skipped` —— 那才是全绿。
-> **在 `main` 上看到 `239 passed` 才说明你走错了分支。**
+> `git checkout solution` 后再跑，会看到 `243 passed, 2 skipped` —— 那才是全绿。
+> **在 `main` 上看到 `243 passed` 才说明你走错了分支。**
 
 `bash script/train_base.sh smoke` 在卷 1-4 敲完之前**跑不通是正常的**
 （它依赖你还没实现的那部分），不用 troubleshoot。
@@ -295,8 +295,10 @@ commit（`7319830`）里凭经验写下的，从来没有被测量过。** 实�
 => 阈值取 0.001 ≈ 5.3σ（比实测最大偏移 0.00044 高 2.3 倍）
 ```
 
-**0.02 比实测噪声大 46 倍。** 后果很严重 —— 下面 13 项里有 11 项
-会落在「噪声带内」。
+**0.02 比实测噪声大 105 倍**（分母是 σ_Δ = 0.000190，判定 `|Δ|` 用的分母；
+若换成单次跑的 σ = 0.000134 则是 149 倍，换成换初始化的实测偏移
+0.000437 则是 46 倍 —— **引用倍数必须连分母一起说**）。
+后果很严重 —— 下面 13 项里有 11 项会落在「噪声带内」。
 
 > 顺带发现**纪律第 3 条原本根本无法执行**：`GPT.init_weights` 里有一行
 > `torch.manual_seed(n_layer*1000 + n_embd)` **按模型形状重新播种**，
@@ -486,7 +488,7 @@ bash script/chat.sh       smoke   # 交互式聊天
 
 ## 卡住了怎么办
 
-1. **跑测试**：`uv run pytest tests/ -q`。224 个章节判据（另加 17 个判据自检）覆盖了形状、因果性、
+1. **跑测试**：`uv run pytest tests/ -q`。224 个章节判据（另加 21 个判据自检）覆盖了形状、因果性、
    RoPE、KV cache、优化器等最容易出错的地方，挂了就说明你的改动引入了 bug。
 2. **看注释**：本项目的代码注释密度很高，尤其是「为什么这么写」的部分，
    基本每个非显然的决定都有解释。

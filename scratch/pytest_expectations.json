@@ -1,0 +1,52 @@
+{
+  "_comment": [
+    "pytest 结果声明的**单一事实源**。",
+    "",
+    "为什么需要它：solution 分支的 doc/ 里三处写着「main 分支应该输出",
+    "69 failed, 116 passed, 7 skipped」，而实测是 71/125/8 —— 那是**腐化**。",
+    "两个原因让它一直没被发现：",
+    "  (1) scratch/audit_docs.py 的正则只认「反引号 + N passed」一种形状，",
+    "      骨架态那种「N failed, M passed, K skipped」的结构**匹配不到**；",
+    "      README.md:28 那行还在```bash 代码块里、没有反引号，更匹配不到。",
+    "  (2) ★ 更根本：骨架态的数字**在 solution 分支上无法验证** ——",
+    "      audit_docs.py 的 LEGAL 集合由当前分支实测构建，而 solution 上跑不出",
+    "      骨架态的数字。所以光修正则不够。",
+    "",
+    "修法：两个分支的数字登记在这里，判据",
+    "  tests/test_judging_soundness.py::test_skeleton_state_claims_are_consistent_across_docs",
+    "要求**文档里所有声明与本文件逐字一致** —— 在任何分支上都能抓到单独腐化。",
+    "",
+    "★ 历史真相（别再当成「main 一直是错的」）：",
+    "  main 的文档在 df03d3e（2026-10-01）就写的是 71/125/8，与 main 实测一致，",
+    "  是**正确**的。是 solution 分支的文档落后（solution 比 main 多 20 个 commit，",
+    "  但两分支已分叉，main 的文档修正没有同步回 solution），一直带着 69/116/7。",
+    "  2026-10 已把 solution 侧的三处同步为 71/125/8。",
+    "",
+    "口径：`uv run pytest tests/ -q` 的**全量**摘要（章节判据 + 判据自检）。",
+    "维护：改判据数量后，两个分支都要重跑更新，并同步 doc/ 与 README.md。",
+    "⚠ 注意 chapter-test 数是**分支相关**的（solution 224 / main 194），",
+    "  所以 README.md 里「N 个测试」那种声明在两个分支上本来就该不同 ——",
+    "  test_tutorial_claims_match_reality 守的是**当前分支**的数，别跨分支搬。"
+  ],
+  "measured_at": "2026-10",
+  "command": "uv run pytest tests/ -q",
+  "states": {
+    "solution": {
+      "passed": 243,
+      "failed": 0,
+      "skipped": 2,
+      "_note": "完整实现，章节判据全绿。2 个 skipped 是「只在骨架态有意义」的判据（test_answer_holding_scripts_are_not_pre_solved / test_scratch_gating_table_matches_reality）。含 2026-10 新增的 4 条守护（倍数可重算 / 倍数须标分母 / 全仓 mojibake / 骨架态声明跨文档一致）。"
+    },
+    "skeleton": {
+      "passed": 125,
+      "failed": 71,
+      "skipped": 8,
+      "_note": "main 分支（未含 2026-10 新增的 4 条守护）：src/ 里每个待实现函数体都是 raise NotImplementedError，所以 failed 是**正确**的结果，不是环境坏了。实测于 RTX 4060 Ti / torch 2.14 / py3.13。这组数字是 main 在 df03d3e 时就登记的，与当时的实测一致。"
+    }
+  },
+  "doc_claim_patterns": {
+    "_note": "文档里出现的这两种写法都算合法声明，判据按这两个模式去比对。",
+    "skeleton": "`{failed} failed, {passed} passed, {skipped} skipped`",
+    "solution": "`{passed} passed, {skipped} skipped`"
+  }
+}

@@ -293,6 +293,72 @@ def test_no_hardcoded_foreign_home_paths():
     )
 
 
+# ===========================================================================
+# 4b. 全仓文本不许有编码损坏（mojibake）
+#
+# ★ 真实事故：tests/test_presets.py:324「模型存到了意外<?>目录」已提交进仓库。
+#   它是**合法的 U+FFFD 编码**（strict 解码能通过），所以不是编码异常，
+#   而是写入时就已损坏并提交了，一路被多个 commit 带过而无人发现。
+#
+# 为什么之前没抓到：本文件里的编码检查绑在
+# `test_no_hardcoded_foreign_home_paths` 的**路径模式**上（只扫 scratch/*.py
+# 的 `/home/xxx/Dev/`），不是通用检查 —— src/、tests/、doc/ 都不在范围内。
+#
+# 价值高于它修的那一个字：把「字符损坏」从一次性清理变成持续守护。
+# ===========================================================================
+# 只扫「我们写的」文本。排除依赖、产物、缓存、以及本文件自己
+# （本文件的 docstring 里就故意包含 U+FFFD 的字面说明）。
+_TEXT_GLOBS = ("src/**/*.py", "tests/**/*.py", "script/*.sh", "scratch/*.py",
+               "scratch/*.json", "doc/**/*.md", "*.md", "*.toml")
+_TEXT_EXCLUDE_DIRS = {".venv", ".git", ".ruff_cache", ".pytest_cache",
+                      "__pycache__", "runs", "node_modules"}
+_TEXT_SELF = pathlib.Path(__file__).name
+
+
+def _iter_repo_text_files():
+    seen = set()
+    for pattern in _TEXT_GLOBS:
+        for p in sorted(REPO.glob(pattern)):
+            if any(part in _TEXT_EXCLUDE_DIRS for part in p.parts):
+                continue
+            if p.name == _TEXT_SELF or not p.is_file():
+                continue
+            if p in seen:
+                continue
+            seen.add(p)
+            yield p
+
+
+def test_no_mojibake_anywhere_in_tracked_text():
+    """全仓文本文件不得含 U+FFFD（替换字符）或非 UTF-8 编码。
+
+    损坏的字节通常在写文件时就已变成 U+FFFD 并被提交，所以严格解码
+    **不会报错** —— 必须显式扫这个码位。
+    """
+    offenders = []
+    for p in _iter_repo_text_files():
+        raw = p.read_bytes()
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as e:
+            offenders.append(f"{p.relative_to(REPO)}: 非法 UTF-8（{e.reason}）")
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if "\ufffd" in line:
+                # 报告整行，并把损坏位置标出来便于定位
+                col = line.index("\ufffd") + 1
+                n_bad = len(line) - len(line.replace("\ufffd", ""))
+                excerpt = line.strip()[:60]
+                offenders.append(
+                    f"{p.relative_to(REPO)}:{lineno}: {n_bad} 个 U+FFFD "
+                    f"(第 {col} 列起) | {excerpt}")
+    assert not offenders, (
+        "这些文件有编码损坏（U+FFFD 是「无法解码的字节」的替换字符）：\n  "
+        + "\n  ".join(offenders)
+        + "\n  损坏通常在写入时就发生并被提交，严格解码抓不到 —— "
+          "只能显式扫这个码位。")
+
+
 def test_entry_scripts_have_a_working_default_mode():
     """入口脚本必须真的支持「不传参数」——它们的注释都写着「默认 smoke」。
 

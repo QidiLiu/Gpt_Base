@@ -81,7 +81,7 @@ bash script/progress.sh        # 告诉你哪一章还没做完
 
 ```bash
 uv run pytest tests/ -q
-# 预期：71 failed, 125 passed, 8 skipped
+# 预期：71 failed, 126 passed, 8 skipped
 ```
 
 > ### ⚠️ 这 69 个 `failed` 是**正确**的
@@ -226,7 +226,7 @@ src/
 | 基线（RoPE + QK-Norm + ReLU²） | 1.7136 | — | |
 | **去掉 RoPE** | 1.8013 | **+0.0877** | 最大的单项影响 |
 | **GELU 替代 ReLU²** | 1.7240 | **+0.0104** | relu² 略好 |
-| 去掉 QK Norm | 1.7098 | −0.0038 | 噪声（\|Δ\|<0.02，要重跑） |
+| 去掉 QK Norm | 1.7098 | −0.0038 | 噪声（smoke 档测不出，要用 ablation 档） |
 
 （这是 smoke 档实测。`ablation` 档数字会不同，量级关系应该一致。）
 
@@ -301,7 +301,7 @@ uv run pytest tests/ -v
 
 194 个测试：卷0 15 + 卷1 31（21 + 精确续训 10）+ 卷2-3 28 + 卷4 14 + 只读护栏 106
 + 只读代码护栏 103（metrics 11 + checkpoint 15 + engine 50 + tasks 27）
-另有 10 个判据自检（`tests/test_judging_soundness.py`），
+另有 11 个判据自检（`tests/test_judging_soundness.py`），
 全量 `pytest tests/` 收集到 192 个。
 专门覆盖「看起来对其实错了」的 bug。你在敲的过程中改坏东西，
 测试会立刻告诉你哪里坏了。几个重点：

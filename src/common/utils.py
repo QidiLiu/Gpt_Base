@@ -132,21 +132,34 @@ _DTYPE_MAP = {
 COMPUTE_DTYPE, COMPUTE_DTYPE_REASON = _detect_compute_dtype()
 
 
-def compute_init(device_type: str = "cuda"):
+def compute_init(device_type: str = "cuda", seed: int = 42):
     """
     统一的初始化入口。返回 (ddp, rank, local_rank, world_size, device)。
 
     本项目只有 1 张卡，所以 ddp 恒为 False、world_size 恒为 1。
     但保留这套返回值的形状，是为了让你读 optim/muon.py 时，
     能看清「分布式分支在单卡下是怎么退化的」（教程卷6）。
+
+    ── ★ 为什么 seed 是参数（2026-10 加）─────────────────────────
+    消融纪律第 3 条写着「|Δ| < 0.02 时重复跑一次，确认不是**初始化随机性**
+    导致的波动」。而在加这个参数之前，那条纪律**根本没法执行**：
+
+      · seed 写死 42 -> 每次运行的权重初始化完全相同
+      · dataloader 按顺序读 row group（数据集本身已预打乱）-> 数据顺序确定
+
+    也就是说**唯一的随机来源就是那��种子**。固定它之后重复跑，
+    测到的只是 GPU 原子操作 / cuDNN 选算法的 nondeterminism，
+    **测不到「换一个初始化会怎样」** —— 而那正是纪律要排除的东西。
+
+    默认值仍是 42，所以不传参时行为与之前逐位一致。
     """
     assert device_type in ("cuda", "mps", "cpu"), f"非法 device_type: {device_type}"
     if device_type == "cuda":
         assert torch.cuda.is_available(), "指定了 cuda 但 torch.cuda 不可用"
 
-    torch.manual_seed(42)
+    torch.manual_seed(seed)
     if device_type == "cuda":
-        torch.cuda.manual_seed(42)
+        torch.cuda.manual_seed(seed)
         # 允许 tf32：fp32 矩阵乘也能走 tensor core
         torch.set_float32_matmul_precision("high")
 

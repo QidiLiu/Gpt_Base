@@ -668,3 +668,80 @@ def test_average_mfu_can_never_exceed_100_percent():
         flops_per_token, batch, 5, 10.0, float("inf"))[1] is None, (
         "非 CUDA 平台 peak 是 inf，MFU 应该为 None 而不是 0"
     )
+
+
+# ===========================================================================
+# 消融的初始化种子必须可控
+#
+# ★ 2026-10 审计发现：消融纪律第 3 条「|Δ| < 0.02 时重复跑一次，
+#   确认不是**初始化随机性**导致的波动」**根本无法执行**：
+#
+#   · GPT.init_weights 里有一行 `torch.manual_seed(n_layer*1000 + n_embd)`，
+#     **按模型形状重新播种**，把 compute_init(device, seed) 覆盖掉了
+#   · dataloader 按顺序读 row group（数据集本身已预打乱）-> 数据顺序确定
+#
+#   也就是说**唯一的随机来源就是那一行**。固定它之后重复跑，测到的只是
+#   GPU 浮点原子操作的不确定性 —— 而不是「换一个初始化会怎样」。
+#
+# 这条测试守住两件事：默认仍是形状派生（历史结果可复现），
+# 以及显式传 seed 真的能换初始化。
+# ===========================================================================
+def _first_proj_signature(seed):
+    """建一个最小模型，返回第一个 c_q 权重之和（初始化指纹）。"""
+    from common.config import make_run_config, resolve_scaling
+    from model.gpt import build_model
+    cfg = make_run_config("ablation", vocab_size=2048)
+    resolve_scaling(cfg)
+    model = build_model(cfg.model, device="cpu", seed=seed)
+    w = next(v for n, v in model.named_parameters() if n.endswith("c_q.weight"))
+    return w.detach().float().sum().item()
+
+
+def test_default_seed_is_shape_derived_and_reproducible():
+    """
+    不传 seed 时用「形状派生」种子，且**逐位可复现**。
+
+    ★ 这一条不能动：所有已发布的 val_bpb 都基于它
+    （`full` 档 346M 那套、14 组消融、ablation 的 1.0615）。
+    改它就等于让所有历史数字失效。
+    """
+    from common.config import make_run_config, resolve_scaling
+    cfg = make_run_config("ablation", vocab_size=2048)
+    resolve_scaling(cfg)
+    m = cfg.model
+    shape_seed = m.n_layer * 1000 + m.n_embd
+
+    a = _first_proj_signature(None)
+    b = _first_proj_signature(None)
+    assert a == b, "不给 seed 时两次初始化不同 -> 已发布的 val_bpb 不可复现"
+
+    # 显式传那个形状种子，必须与不给完全相同（证明「不给 = 形状派生」）
+    c = _first_proj_signature(shape_seed)
+    assert c == a, (
+        f"显式传形状种子 {shape_seed} 的结果与不给 seed 不同 —— "
+        "说明默认路径不再是「形状派生」，历史结果会失效"
+    )
+
+
+def test_explicit_seed_actually_changes_initialization():
+    """★ 传不同的 seed 必须真的换初始化 —— 否则纪律第 3 条仍然无法执行。"""
+    base = _first_proj_signature(None)
+    s7 = _first_proj_signature(7)
+    s99 = _first_proj_signature(99)
+    assert s7 != base, "--seed 7 没有改变初始化（compute_init 的 seed 被覆盖了？）"
+    assert s99 != s7, "seed 7 和 99 给出了同一个初始化"
+    assert s99 != base, "--seed 99 没有改变初始化"
+
+
+def test_seed_flag_defaults_to_none_so_history_is_preserved():
+    """
+    ★ `--seed` 的默认值必须是 None 而不是 42。
+
+    如果默认是 42，那么 `init_weights` 收到的就是「显式 42」，
+    而形状派生的值是 `n_layer*1000 + n_embd`（d6 是 6384）——
+    **默认行为会悄悄改变**，所有已发布数字失效。
+    """
+    from training.train_base import parse_args
+    assert parse_args(["--mode", "ablation"]).seed is None, \
+        "--seed 默认必须是 None（= 形状派生），不能是 42"
+    assert parse_args(["--mode", "ablation", "--seed", "42"]).seed == 42

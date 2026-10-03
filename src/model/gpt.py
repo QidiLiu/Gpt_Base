@@ -98,7 +98,7 @@ class GPT(nn.Module):
     # 初始化：单独一个函数，因为要在 to_empty(device) 之后调用
     # =======================================================================
     @torch.no_grad()
-    def init_weights(self):
+    def init_weights(self, seed: int | None = None):
         """
         一次把所有参数初始化完。集中在一个函数里，是为了「初始化逻辑」可审计。
 
@@ -114,7 +114,23 @@ class GPT(nn.Module):
           · 其余用 Uniform 而非 Normal —— 避免离群值
         """
         cfg = self.config
-        torch.manual_seed(cfg.n_layer * 1000 + cfg.n_embd)  # 形状相同的模型给同一种子
+        # ★ seed=None（默认）-> 用形状派生的种子，**这是历史行为**，
+        #   所有已发布的 val_bpb 都基于它，一个字节都不改变。
+        #
+        #   seed=<int> -> 显式指定。这条是 2026-10 加的，因为消融纪律
+        #   第 3 条要求「确认不是**初始化随机性**导致的波动」，而在没有它
+        #   之前那条纪律无法执行：
+        #     · 这一行原本**按形状重新播种**，把 compute_init 的 seed 覆盖掉了
+        #     · dataloader 的数据顺序是确定的（数据集已预打乱）
+        #   也就是说**唯一的随机来源就是这一行**。固定它之后重复跑，
+        #   测到的只是 GPU 浮点原子操作的不确定性，测不到「换个初始化会怎样」。
+        #
+        #   注意：形状派生的种子本身是个**优点** —— 它让「形状相同的两个模型
+        #   拿到同一个初始化」，消融的 Δ 里不含初始化噪声。
+        #   代价是「换一个初始化」需要显式传 seed。
+        if seed is None:
+            seed = cfg.n_layer * 1000 + cfg.n_embd   # 形状相同的模型给同一种子
+        torch.manual_seed(seed)
 
         # 嵌入与反嵌入
         torch.nn.init.normal_(self.transformer.wte.weight, mean=0.0, std=0.8)
@@ -452,7 +468,7 @@ def sample_from_logits(logits, rng, temperature=1.0, top_k=None):
     return torch.multinomial(probs, num_samples=1, generator=rng)
 
 
-def build_model(cfg, device="cuda") -> GPT:
+def build_model(cfg, device="cuda", seed: int | None = None) -> GPT:
     """
     【meta device 三步法】建模型。
 
@@ -473,5 +489,5 @@ def build_model(cfg, device="cuda") -> GPT:
     with torch.device("meta"):
         model = GPT(cfg)
     model.to_empty(device=device)
-    model.init_weights()
+    model.init_weights(seed)
     return model

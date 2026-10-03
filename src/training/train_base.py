@@ -60,6 +60,13 @@ def parse_args(argv=None):
                    help="档位：debug=单步调试 / smoke=2-3分钟 / "
                         "ablation=d6消融(约44分钟) / full=d24最佳组合(约41小时)")
     p.add_argument("--depth", type=int, default=None, help="覆盖档位默认深度（唯一旋钮）")
+    # ★ 消融纪律第 3 条要求「确认不是初始化随机性导致的波动」，
+    #   而 dataloader 的数据顺序是确定的、seed 曾经写死 42 ——
+    #   那条纪律在没有这个开关时无法执行。详见 common.utils.compute_init。
+    p.add_argument("--seed", type=int, default=None,
+                   help="权重初始化种子。**不给 = 按模型形状派生**"
+                        "（本项目历史行为，所有已发布的 val_bpb 都基于它）。"
+                        "复跑消融时传一个具体整数，才能测到初始化带来的波动")
     # 消融开关：直接覆盖 ModelConfig 的字段
     for flag, typ, help_ in [
         ("norm-type", str, "rms|layer"),
@@ -323,7 +330,7 @@ def vocab_mismatch_messages(mode, expected, actual):
 def main():
     args = parse_args()
     device_type = autodetect_device_type()
-    ddp, rank, local_rank, world_size, device = compute_init(device_type)
+    ddp, rank, local_rank, world_size, device = compute_init(device_type, args.seed)
     sync = synchronize(device_type)
     log0(f"设备 {device} | COMPUTE_DTYPE {COMPUTE_DTYPE} ({COMPUTE_DTYPE_REASON})")
     log0(flash_backend_report(device_type))
@@ -351,7 +358,7 @@ def main():
 
     # ---- 2) 模型（meta device 三步法）----
     log0("── 模型 " + "─" * 58)
-    model = build_model(cfg.model, device=device)
+    model = build_model(cfg.model, device=device, seed=args.seed)
     log0(model.describe())
 
     tag = cfg.train.model_tag or f"d{cfg.model.n_layer}"

@@ -132,7 +132,7 @@ _DTYPE_MAP = {
 COMPUTE_DTYPE, COMPUTE_DTYPE_REASON = _detect_compute_dtype()
 
 
-def compute_init(device_type: str = "cuda", seed: int = 42):
+def compute_init(device_type: str = "cuda", seed: int | None = None):
     """
     统一的初始化入口。返回 (ddp, rank, local_rank, world_size, device)。
 
@@ -157,6 +157,10 @@ def compute_init(device_type: str = "cuda", seed: int = 42):
     if device_type == "cuda":
         assert torch.cuda.is_available(), "指定了 cuda 但 torch.cuda 不可用"
 
+    # seed=None 是「不给」的默认值 -> 回落到历史的 42。
+    # （torch.manual_seed(None) 会抛 TypeError，所以必须在这里挡一下。）
+    if seed is None:
+        seed = 42
     torch.manual_seed(seed)
     if device_type == "cuda":
         torch.cuda.manual_seed(seed)

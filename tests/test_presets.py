@@ -745,3 +745,29 @@ def test_seed_flag_defaults_to_none_so_history_is_preserved():
     assert parse_args(["--mode", "ablation"]).seed is None, \
         "--seed 默认必须是 None（= 形状派生），不能是 42"
     assert parse_args(["--mode", "ablation", "--seed", "42"]).seed == 42
+
+
+def test_compute_init_tolerates_seed_none():
+    """
+    ★ `compute_init(device, None)` 不能抛。
+
+    `torch.manual_seed(None)` 会抛
+    `TypeError: int() argument must be ... not 'NoneType'`，
+    而 `--seed` 不给时 argparse 给的就是 None —— 这条不挡，
+    训练在**建模型之前**就秒退（实测踩过：复跑批次 3 组全 rc=1）。
+    """
+    from common.utils import compute_init
+    from training.train_base import parse_args
+    assert parse_args(["--mode", "ablation"]).seed is None
+    torch.manual_seed(0)
+    before = torch.randn(3).tolist()
+    compute_init("cpu", None)                    # 不应抛
+    after_none = torch.randn(3).tolist()
+    torch.manual_seed(0)
+    torch.randn(3)
+    compute_init("cpu", 42)                      # 显式 42 = 历史默认
+    after_42 = torch.randn(3).tolist()
+    assert after_none == after_42, (
+        "seed=None 与 seed=42 给出了不同的全局 RNG 状态 —— "
+        "不给 --seed 时应与历史行为逐位一致")
+    assert after_none != before, "前置条件不成立：种子根本没生效"

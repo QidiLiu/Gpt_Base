@@ -152,7 +152,7 @@ def test_chapter_suites_still_have_enough_cases():
       本测试 = 快速、防灾难性掏空；audit_docs = 精确、需手动/CI 跑。
     """
     minimum = {
-        "test_presets.py": 24,         # 卷0（只读，应全绿）
+        "test_presets.py": 25,         # 卷0（只读，应全绿）
         "test_data.py": 20,            # 卷1
         "test_core.py": 43,            # 卷2-3
         "test_optim.py": 16,           # 卷4

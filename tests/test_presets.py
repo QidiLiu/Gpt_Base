@@ -286,16 +286,30 @@ def test_full_preset_carries_the_best_known_combination():
     make_run_config 之前只把 `**overrides` 分发到 ModelConfig/TrainConfig，
     preset 自己多写的键（比如 muon_flavor=、use_smear=）**完全不生效**，
     而且不报错。现在两条路径合并了，但这个失败模式太隐蔽，必须钉住。
+
+    ★ 2026-10：`use_resid_lambdas` **被实测判定为有害（32σ）并从默认里去掉了**。
+      实测数据见 scratch/ablation_noise_floor.json，
+      重算显著性跑 scratch/measure_noise_floor.py。
+      所以这里的期望组合是「4 个开、resid 关」，不再是「5 个全开」。
     """
     cfg = make_run_config("full", vocab_size=16384)
     m, mu = cfg.model, cfg.optim.muon
-    for name in ("use_resid_lambdas", "use_x0_lambdas", "use_value_embeds",
+
+    # 实测为真实改善的 4 个 trick，必须仍然开着
+    for name in ("use_x0_lambdas", "use_value_embeds",
                  "use_smear", "use_backout"):
         assert getattr(m, name) is True, (
             f"full 档应当开启 {name}（消融结论），实际是 {getattr(m, name)}。"
             f"如果这个断言挂了，先查 make_run_config 的分发循环是不是"
             f"又把 preset 的键漏掉了。"
         )
+
+    # ★ resid_lambdas 必须**显式关闭**（而不是「碰巧是默认值」）
+    assert m.use_resid_lambdas is False, (
+        "full 档的 use_resid_lambdas 又是 True 了 —— "
+        "实测 Δ=+0.0061（32σ），它在这个规模上显著有害。"
+        "要重测请显式传 --use-resid-lambdas，不要改回默认。"
+    )
     assert mu.flavor == "advanced", (
         f"full 档应当用 Muon advanced，实际是 {mu.flavor!r}。"
     )
@@ -771,3 +785,123 @@ def test_compute_init_tolerates_seed_none():
         "seed=None 与 seed=42 给出了不同的全局 RNG 状态 —— "
         "不给 --seed 时应与历史行为逐位一致")
     assert after_none != before, "前置条件不成立：种子根本没生效"
+
+
+def test_full_preset_resid_lambdas_off_is_still_reachable_and_ablatable():
+    """
+    ★ 把 resid_lambdas 从 full 默认里去掉之后，**消融能力必须完好**。
+
+    这是这次改动的关键风险：默认关掉一个东西，很容易顺手把它变成
+    「再也测不了」。三个方向都必须在：
+      · 显式打开          --use-resid-lambdas
+      · 全开              --all-tricks
+      · 先开后关（顺序契约）--all-tricks --no-resid-lambdas
+    """
+    from training.train_base import parse_args, apply_overrides
+    names = ("use_resid_lambdas", "use_x0_lambdas", "use_value_embeds",
+             "use_smear", "use_backout")
+
+    def flags_of(argv):
+        cfg = make_run_config("full", vocab_size=16384)
+        apply_overrides(cfg, parse_args(argv))
+        return {n: getattr(cfg.model, n) for n in names}
+
+    base = flags_of(["--mode", "full"])
+    assert base["use_resid_lambdas"] is False
+
+    # (1) 显式打开
+    on = flags_of(["--mode", "full", "--use-resid-lambdas"])
+    assert on["use_resid_lambdas"] is True, \
+        "--use-resid-lambdas 打不开 resid —— 它从默认去掉后不该变成死开关"
+
+    # (2) --all-tricks 仍然开全部 5 个（含 resid）
+    allt = flags_of(["--mode", "full", "--all-tricks"])
+    assert all(allt.values()), f"--all-tricks 应开全部 5 个，实际 {allt}"
+
+    # (3) 「先开后关」顺序契约仍然成立
+    nof = flags_of(["--mode", "full", "--all-tricks", "--no-resid-lambdas"])
+    assert nof["use_resid_lambdas"] is False and \
+        nof["use_value_embeds"] is True, \
+        "--all-tricks --no-resid-lambdas 的语义变了（顺序契约被破坏）"
+
+
+def test_resid_lambdas_removal_is_backed_by_the_stored_measurement():
+    """
+    ★ 改 full 档默认必须有实测依据，而且依据必须还在仓库里。
+
+    这条防止的是「过一阵子没人记得为什么关掉了，于是有人手滑改回去」。
+    判据会：
+      1. 确认 preset 的注释里写了实测数字
+      2. 确认原始测量数据文件里 resid 那一行确实是个**正** Δ（变差）
+      3. 确认它超过了存储的显著性阈值
+    """
+    import json
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    src = (root / "src" / "common" / "config.py").read_text()
+    data = json.loads((root / "scratch" / "ablation_noise_floor.json").read_text())
+
+    # (1) preset 注释里必须有实测数字
+    m = re.search(r"Δ\s*=\s*\+0\.0061", src)
+    assert m, (
+        "src/common/config.py 里 use_resid_lambdas=False 附近缺少实测数字 "
+        "（Δ=+0.0061）。关掉一个默认必须留下依据，否则后人不敢动也不敢留。")
+
+    # (2) 存储的数据里 resid 必须是个「变差」的正 Δ
+    #     —— 数据在 scratch/ablation_noise_floor.json 的 verdict 段
+    assert "d6_resid" in data["verdict"]["real_and_large"], \
+        ("ablation_noise_floor.json 的 verdict 里 d6_resid 应属于 real_and_large "
+         f"（实际：{data['verdict']}）")
+
+    # (3) 那个 Δ 必须超过存储的显著性阈值 —— 否则「有害」的说法不成立
+    thresh = data["derived"]["threshold"]
+    assert 0.0061 > thresh, (
+        f"d6_resid 的 Δ=0.0061 没有超过显著性阈值 {thresh} —— "
+        "如果噪声底被重新测过、阈值变大了，这条判据会红，"
+        "那时需要重新决定 full 档该不该开 resid_lambdas")
+
+
+def test_full_preset_states_resid_lambdas_explicitly_not_by_omission():
+    """
+    ★★ `PRESETS["full"]` 必须**显式写出** `use_resid_lambdas=False`，
+    不能靠「省掉这一行，反正 ModelConfig 默认是 False」。
+
+    这不是洁癖，是一个具体的失效模式：
+
+        注入验证：把 preset 里那行 `use_resid_lambdas=False` 删掉，
+        **所有判据仍然全绿** —— 因为 `ModelConfig.use_resid_lambdas`
+        的默认值恰好也是 False，组装出来的配置一模一样。
+
+    但这两种写法对读者的含义完全不同：
+      · 显式 False = 「我们测过，它有害，所以关掉」
+      · 省略       = 「没人想过这件事，碰巧默认关着」
+
+    前者带着依据（见 config.py 里那段实测注释），
+    后者会在有人改 `ModelConfig` 默认值时**静默失效** ——
+    改默认值那一刻，没有任何测试会红，但 full 档的行为已经变了。
+
+    所以这条直接查 `PRESETS` 字典本身，而不是查组装结果。
+    """
+    from common.config import PRESETS, ModelConfig
+
+    assert "use_resid_lambdas" in PRESETS["full"], (
+        "PRESETS['full'] 里没有显式写 use_resid_lambdas —— "
+        "它现在只是「碰巧等于 ModelConfig 的默认值」。"
+        "一旦有人改 ModelConfig.use_resid_lambdas 的默认，full 档会静默改变。")
+
+    # 前置条件：ModelConfig 的默认值确实是 False（所以「省略」和「显式 False」同值）
+    assert ModelConfig().use_resid_lambdas is False, \
+        ("前置条件不成立：ModelConfig 的默认已经不是 False —— "
+         "那么「省略」和「显式 False」就不同值了，本条的理由要重写")
+
+    # 而显式写的值必须是 False
+    assert PRESETS["full"]["use_resid_lambdas"] is False, \
+        f"PRESETS['full']['use_resid_lambdas'] = " \
+        f"{PRESETS['full'].get('use_resid_lambdas')!r}，应为 False"
+
+    # 其余 4 个被证明有益的 trick 同样必须显式写出（防止有人用「删掉」来关）
+    for name in ("use_x0_lambdas", "use_value_embeds", "use_smear", "use_backout"):
+        assert name in PRESETS["full"], \
+            f"PRESETS['full'] 应当显式写出 {name}"
+        assert PRESETS["full"][name] is True

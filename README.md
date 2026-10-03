@@ -58,9 +58,10 @@ bash script/chat.sh       smoke   # 交互式聊天
   Muon `simple` + 5 个 trick 全关。一旦基线本身开了 trick，测出来的是
   「A 相对 A+B」，单项贡献就被稀释了。
 - **`full`（d24）**回答「最终模型能有多好」。所以它开满 nanochat 的生产
-  配置：5 个残差流 trick 全开 + Muon `advanced`，只训一次，不做对照。
+  配置：4 个残差流 trick + Muon `advanced`（`resid_lambdas` 已实测有害并去掉），
+  只训一次，不做对照。
 
-> **`device_batch_size` 的实测阶梯**（trick 全开 + Muon advanced，T=1024，
+> **`device_batch_size` 的实测阶梯**（trick 全开 5 个 + Muon advanced，T=1024，
 > 连跑 3-4 个完整 step 的稳态值）：
 >
 > | dbs | accum | 峰值显存 | tok/s | MFU | 总耗时 | 稳定性 |
@@ -217,7 +218,8 @@ tokenizer → 后来 `ablation`/`full` 传 `--vocab-size 16384` 时
 2. **所有「在噪声带内」的 trick 其实都是真实效应**：
    smear −0.0050（26σ）、x0 −0.0027（14σ）、backout −0.0024（13σ）。
    它们只是**小**，不是**不存在**。
-3. **`resid_lambdas` 确实有害**（+0.0061，32σ）。⚠ **`full` 档默认开着它。**
+3. **`resid_lambdas` 确实有害**（+0.0061，32σ）—— **已据此把它从
+   `full` 档默认里去掉**。这是本项目唯一一处因实测而改动 `full` 档默认配置的地方。
 4. **RMSNorm 比 LayerNorm 好 0.0013**（7σ）—— 真实但很小。
    RMSNorm 的主要价值仍然是**零参数**和**少一次减均值**，不是质量。
 5. **Muon advanced 比 simple 好 0.0016**（8σ）—— 真实但很小。
@@ -332,7 +334,7 @@ src/
 script/           6 个入口脚本（train_base / eval_base / train_sft / eval_sft / chat / progress）
 doc/tutorial/     教程 37 章（卷0 准备 + 卷1-4 手抄 + 卷5-8 只读）
 scratch/          13 个实验脚本（含 measure_noise_floor.py：消融显著性可复算）
-tests/            221 个测试，每章的完成判据（另加 15 个判据自检，共 236）
+tests/            224 个测试，每章的完成判据（另加 15 个判据自检，共 236）
 ```
 
 ## 看答案

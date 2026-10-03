@@ -388,8 +388,37 @@ PRESETS = {
         # ↓ 消融结论：nanochat 生产配置。改这几个开关就能换配置，
         #   不必动上面的形状部分。
         muon_flavor="advanced",
-        use_resid_lambdas=True, use_x0_lambdas=True, use_value_embeds=True,
+        # ⚠⚠ use_resid_lambdas **2026-10 从 full 档默认里去掉了**。
+        #
+        #   理由是实测，不是风格偏好。`ablation` 档（d6，3096 步，
+        #   V=16384）逐项消融，3 次同配置 + 1 次换初始化测出噪声底
+        #   σ_Δ = 0.000190（显著性阈值 0.001 ≈ 5.3σ）：
+        #
+        #       --use-resid-lambdas   Δ = +0.0061   32σ
+        #       --all-tricks（5 个全开）Δ = −0.0294  155σ
+        #
+        #   **它不是「无效」，是显著有害**（32σ）—— 而它原本是 full 档默认。
+        #   同批实测里其余 4 个 trick 全部是真实改善：
+        #       --use-value-embeds  −0.0226 (119σ)
+        #       --use-smear         −0.0050 ( 26σ)
+        #       --use-x0-lambdas    −0.0027 ( 14σ)
+        #       --use-backout       −0.0024 ( 13σ)
+        #
+        #   要重测它仍然可以：`--use-resid-lambdas`（或 `--all-tricks`）。
+        #   复现命令与原始数据见 scratch/ablation_noise_floor.json，
+        #   重算显著性跑 scratch/measure_noise_floor.py。
+        #
+        #   ⚠ **这是 d6 档（23M 参数 / 2 亿 token）的结论，不能外推到 d24。**
+        #      resid_lambdas 的作用是「给每层残差流一个可学缩放」，
+        #      而层数越多、深度越大，它能做的事**可能**也越多。
+        #      本项目从未在 d24 上测过 —— 若 full 档真跑起来，
+        #      值得在 d12 上先复测一次（3096 步，约 1 小时）。
+        use_x0_lambdas=True, use_value_embeds=True,
         use_smear=True, use_backout=True,
+        # resid_lambdas 显式写 False 而不是省略 —— 省略的话
+        # 「ModelConfig 的默认值恰好是 False」和「preset 决定关掉它」
+        # 在代码上长得一模一样，而这两个含义完全不同。
+        use_resid_lambdas=False,
         # 矩阵参数的 weight decay。⚠ 必须显式给 —— MuonConfig 默认是 0.0，
         # 而 0.0 会让「谨慎 WD」这条分支完全空转（乘 0 等于没做）。
         # 见 MuonConfig.weight_decay 的注释：0.1 是按量级推测的值，

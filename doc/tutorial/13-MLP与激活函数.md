@@ -321,12 +321,27 @@ bash scratch/ablation.sh d6_relu2
 
 ### 想看到真正的差异：放大参数量
 
-激活函数的效应在 d6（384 维）上测不出来。如果要测，得用
-nanochat 的调参区间（d12 以上），那时 GELU 系通常略优。
+⚠ **本项目从未测过激活函数的消融**，所以这里不给数字。
 
-本项目没有那个算力，所以**这个消融的结论是「测不出差别」**，
-而这本身就是诚实的答案 —— 不要在文档里写一个没实测过的
-「ReLU² 更好 0.02 bpb」。
+> ★ **2026-10 更正**：我原来在这里写的是「效应在 d6 上测不出来」。
+> 那句话的依据是「噪声带 0.02」—— ★ 而那个噪声是拍的，
+> 实测 σ_Δ 只有 0.000190。**所以「测不出来」这个理由不成立**，
+> 正确的说法是「**没测**」。
+>
+> 这两者的区别正是本项目的核心纪律：**没测 ≠ 测不出。**
+>
+> 真要测，d6 档（39 分钟）就够，命令是：
+>
+> ```bash
+> bash script/train_base.sh ablation --no-resume \
+>      --model-tag d6_gelu --activation gelu
+> bash script/train_base.sh ablation --no-resume \
+>      --model-tag d6_gelu_tanh --activation gelu_tanh
+> bash scratch/ablation.sh d6_base
+> ```
+>
+> 本项目没跑，所以**不要在文档里写一个没实测过的「ReLU² 更好 0.0x bpb」** ——
+> 这个要求不变，只是理由从「测不出」变成了「还没测」。
 
 ---
 

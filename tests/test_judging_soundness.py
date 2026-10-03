@@ -544,17 +544,26 @@ def test_tutorials_do_not_assert_the_unmeasured_threshold_as_fact():
     import re
     from pathlib import Path
     root = Path(__file__).resolve().parents[1]
-    # 这些是「正在更正这句话」的章节，允许出现
+    # 这些章节整节都在「更正这句话」，允许出现
     excused = {
         "00-如何使用本教程.md", "06-bits-per-byte.md", "08-RMSNorm.md",
         "10-注意力三步曲.md", "12-QK-Norm与GQA.md", "README.md",
     }
+    # ★ 逐行豁免：同一行里出现这些词，说明这一行是在**否定** 0.02，
+    #   而不是断言它。缺了这个豁免，本判据会把自己写的更正文字也抓了
+    #   —— 第一次就栽在这上面（ch13 的更正里写了「噪声 ±0.02」）。
+    #    （刻意不含「实测」—— 那太宽，「实测噪声带 ±0.02」这种
+    #     伪装成实测的断言也会被放过。已验证去掉它仍能通过。）
+    disavow = ("拍的", "没测过", "未验证", "更正", "早期文档",
+               "曾经", "而不是", "而非", "0.001")
     offenders = []
     for md in sorted((root / "doc" / "tutorial").glob("*.md")):
         if md.name in excused or md.name == "README.md":
             continue
         for lineno, line in enumerate(md.read_text().splitlines(), 1):
             if "0.02" not in line:
+                continue
+            if any(k in line for k in disavow):
                 continue
             # 断言式表述：噪声带 / 落在噪声内 …… 0.02
             if re.search(r"噪声(带)?[^。]{0,12}0\.02|0\.02[^。]{0,12}噪声", line):

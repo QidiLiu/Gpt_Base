@@ -571,3 +571,84 @@ def test_tutorials_do_not_assert_the_unmeasured_threshold_as_fact():
     assert not offenders, (
         "这些行把未验证的 0.02 当成事实：\n  " + "\n  ".join(offenders) +
         "\n  真实阈值是实测的 0.001（σ_Δ = 0.000190）。")
+
+
+def test_interaction_check_is_stored_and_mathematically_consistent():
+    """
+    ★★ 「单变量边际效应 ≠ 从组合移除的效应」这条结论必须自洽。
+
+    2026-10 实测发现：
+        resid_lambdas 单独测        Δ = +0.0061  （32σ，显著有害）
+        从 5-trick 组合里移除它    Δ = -0.0008  （4σ，方向相反且小 7.6 倍）
+
+    这两个数**都在磁盘上**（runs/base_checkpoints/d6_resid 和
+    d6_alltricks / d6_fulltricks）。本条验证：
+      1. 存储的 interaction_check 数字与磁盘一致
+      2. ratio 算得对
+      3. ★ 文档里必须同时出现这两个数 ——
+         只写「resid 有害 +0.0061」而不写「实际只赚 0.0008」
+         就是**选择性引用**，会让读者以为删掉 resid 能赚 0.0061
+    """
+    import glob
+    import json as _json
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    data = _noise_floor_json()
+    ic = data["derived"]["interaction_check"]
+
+    def bpb(tag):
+        f = sorted(glob.glob(str(root / "runs" / "base_checkpoints" / tag
+                                / "meta_*.json")))
+        assert f, f"{tag} 没有跑批存档"
+        return _json.load(open(f[-1]))["best_val_bpb"]
+
+    import statistics as st
+    same = [bpb(t) for t in ("d6_base", "base_r1", "base_r2")]
+    base = st.mean(same)
+
+    resid_alone = bpb("d6_resid") - base
+    removal = bpb("d6_fulltricks") - bpb("d6_alltricks")
+
+    assert abs(ic["resid_alone_delta"] - resid_alone) < 1e-9, \
+        f"interaction_check.resid_alone_delta={ic['resid_alone_delta']}，" \
+        f"实算是 {resid_alone}"
+    assert abs(ic["removing_resid_from_all5_delta"] - removal) < 1e-9, \
+        f"interaction_check 的移除值={ic['removing_resid_from_all5_delta']}，" \
+        f"实算是 {removal}"
+    assert abs(ic["ratio"] - abs(resid_alone / removal)) < 0.2, \
+        f"ratio={ic['ratio']}，按实算应为 {abs(resid_alone / removal):.1f}"
+
+    # ★ 方向必须相反：单独测有害，从组合移除才是收益
+    assert resid_alone > 0 > removal, (
+        f"方向反了：单独测 resid_alone={resid_alone:+.4f}，"
+        f"移除 removal={removal:+.4f} —— "
+        "交互效应的前提是这两个符号相反")
+
+    # 文档必须同时出现两个数
+    for md in ("README.md", "doc/tutorial/README.md",
+               "doc/tutorial/17-resid-lambdas与x0-lambdas.md"):
+        text = (root / md).read_text()
+        assert "0.0061" in text, f"{md} 没提 resid 单独测的 +0.0061"
+        assert "0.0008" in text, (
+            f"{md} 提到了 resid 单独测 +0.0061，却没提"
+            "「从组合移除实际只赚 0.0008」—— "
+            "这是选择性引用，读者会以为删掉 resid 能赚 0.0061")
+
+
+def test_full_preset_no_longer_claims_all_five_tricks():
+    """
+    `full` 档现在是 4 个 trick。任何仍说它「trick 全开」的地方都是错的。
+    """
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    for md in ("README.md", "doc/tutorial/README.md"):
+        text = (root / md).read_text()
+        bad = [ln.strip() for ln in text.splitlines()
+               if "trick 全开" in ln or "全开 + Muon" in ln]
+        # 允许出现在明确限定「那是旧的 5-trick 配置」的语境里
+        bad = [ln for ln in bad
+               if not any(k in ln for k in ("5 个", "旧", "曾经", "resid",
+                                            "device_batch_size", "相比"))]
+        assert not bad, (
+            f"{md} 仍在把 full 档描述成「trick 全开」，但 resid_lambdas "
+            f"已被去掉：\n  " + "\n  ".join(bad))

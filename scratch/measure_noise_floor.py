@@ -37,6 +37,9 @@ ABLATION_FLAGS = {
     "d6_adv":        "--muon-advanced",
     "d6_layernorm":  "--norm-type layer",
     "d6_shve":       "--shared-value-embeds",
+    # ★ 新的 full 档默认（4 trick，不含 resid_lambdas）——
+    #   实测用来验证「把 resid 从默认去掉」这个决定本身
+    "d6_fulltricks": "--use-value-embeds --use-x0-lambdas --use-smear --use-backout",
 }
 BASE_RUNS = ("d6_base", "base_r1", "base_r2")
 

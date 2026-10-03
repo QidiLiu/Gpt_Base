@@ -10,19 +10,26 @@
     "  PYTHONPATH=src python -m training.train_base --mode ablation \\",
     "      --model-tag base_r1 --no-resume",
     "  ... --seed 7   （换初始化）",
-    "统计见 scratch/measure_noise_floor.py"
+    "统计见 scratch/measure_noise_floor.py",
+    "2026-10 补测 d6_fulltricks（去掉 resid_lambdas 的 4-trick 组合 = 新的 full 默认），用来验证「把 resid_lambdas 从 full 默认去掉」这个决定本身。"
   ],
   "measured_at": "2026-10",
   "hardware": "RTX 4060 Ti 16GB (SM 8.9)",
   "preset": "ablation",
   "config": {
-    "n_layer": 6, "n_embd": 384, "seq_len": 1024, "vocab_size": 16384,
-    "steps": 3096, "tokens": 202899456, "tricks": "全关", "muon": "simple"
+    "n_layer": 6,
+    "n_embd": 384,
+    "seq_len": 1024,
+    "vocab_size": 16384,
+    "steps": 3096,
+    "tokens": 202899456,
+    "tricks": "全关",
+    "muon": "simple"
   },
   "runs_same_seed": {
-    "d6_base":  1.0614994759509104,
-    "base_r1":  1.0616730714008746,
-    "base_r2":  1.0614084297727358,
+    "d6_base": 1.0614994759509104,
+    "base_r1": 1.0616730714008746,
+    "base_r2": 1.0614084297727358,
     "_note": "d6_base/base_r1/base_r2 是同配置的 3 次运行（形状派生种子 6384）"
   },
   "run_different_seed": {
@@ -30,24 +37,69 @@
     "_note": "--seed 7，用于分离「初始化」与「run-to-run」两个噪声源"
   },
   "derived": {
-    "same_seed_mean": 1.0615269803748403,
+    "same_seed_mean": 1.0615269803748404,
     "same_seed_stdev": 0.0001344,
     "init_shift": 0.000437,
     "init_shift_in_sigma": 3.2,
-    "sigma_delta": 0.000190,
+    "sigma_delta": 0.00019,
     "sigma_delta_formula": "sqrt(2) * same_seed_stdev  （两个各跑一次的配置相减）",
     "threshold": 0.001,
     "threshold_in_sigma": 5.3,
     "old_unmeasured_threshold": 0.02,
-    "old_over_measured_ratio": 46
+    "old_over_measured_ratio": 46,
+    "interaction_check": {
+      "resid_alone_delta": 0.006079623025514236,
+      "resid_alone_sigma": 31.97440872517365,
+      "removing_resid_from_all5_delta": -0.0008165248291427396,
+      "removing_resid_from_all5_sigma": -4.294328531834298,
+      "ratio": 7.445729521657247,
+      "_display": {
+        "resid_alone_delta": 0.0061,
+        "resid_alone_sigma": 32,
+        "removing_resid_from_all5_delta": -0.0008,
+        "removing_resid_from_all5_sigma": -4,
+        "ratio": 7.4
+      },
+      "lesson": "单变量消融测的是「其他开关都关掉时」的边际效应，不是「其他开关都开着时」的移除效应。两者可以差 7.6 倍。"
+    }
   },
   "verdict": {
-    "genuinely_unmeasurable": ["d6_shve"],
-    "real_but_small": ["d6_layernorm", "d6_adv"],
+    "genuinely_unmeasurable": [
+      "d6_shve"
+    ],
+    "real_but_small": [
+      "d6_layernorm",
+      "d6_adv"
+    ],
     "real_and_large": [
-      "d6_norope", "d6_tie", "d6_resid", "d6_noqk",
-      "d6_nosoftcap", "d6_smear", "d6_ve", "d6_alltricks",
-      "d6_backout", "d6_x0"
+      "d6_norope",
+      "d6_tie",
+      "d6_resid",
+      "d6_noqk",
+      "d6_nosoftcap",
+      "d6_smear",
+      "d6_ve",
+      "d6_alltricks",
+      "d6_backout",
+      "d6_x0",
+      "d6_fulltricks"
     ]
+  },
+  "runs_ablation": {
+    "d6_norope": 1.1144932368891343,
+    "d6_tie": 1.0882474705214376,
+    "d6_resid": 1.0676066154003545,
+    "d6_noqk": 1.0665099113308878,
+    "d6_smear": 1.056569069125868,
+    "d6_nosoftcap": 1.0643293518792967,
+    "d6_x0": 1.0588230345435938,
+    "d6_backout": 1.05912247600156,
+    "d6_adv": 1.0599749372659373,
+    "d6_layernorm": 1.0628699745660557,
+    "d6_shve": 1.0616265955336817,
+    "d6_ve": 1.0389262042056848,
+    "d6_alltricks": 1.0320902988405853,
+    "d6_fulltricks": 1.0312737740114426,
+    "_note": "d6_fulltricks = 新的 full 档默认（4 trick，不含 resid_lambdas），实测用来验证那次配置改动"
   }
 }

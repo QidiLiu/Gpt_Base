@@ -88,6 +88,6 @@ echo
 printf '\033[1;33m[重要]\033[0m 改完 src/ 或 tests/ 之后，先确认判据本身是可达的：\n'
 echo "  git stash push -- src/ tests/    # 有改动才需要；工作区干净时会报错，可跳过"
 echo "  git checkout solution && uv run pytest tests/ -q"
-echo "  # 预期：237 passed, 2 skipped（2 个 skipped 是「只在骨架态有意义」的判据）"
+echo "  # 预期：239 passed, 2 skipped（2 个 skipped 是「只在骨架态有意义」的判据）"
 echo "  git checkout main && git stash pop"
 echo "  （判据若在完整答案上都过不了，你永远敲不到全绿 —— 见 tests/test_judging_soundness.py）"

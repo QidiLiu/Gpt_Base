@@ -39,6 +39,20 @@ declare -A CHAPTERS=(
   ["26"]="tests/test_optim.py -k 'cautious'"
   ["27"]="tests/test_optim.py -k 'grouping'"
   ["28"]="tests/test_optim.py -k 'hyperparams'"
+  # ── 卷 5-8：只读卷。代码在 main 上就是完整的（training/inference/
+  #    engine/metrics/checkpoint），判据是「只读护栏」——挂掉意味着
+  #    只读代码被改坏了。⚠ 但其中 29/34 两行引用的 data 判据同时
+  #    也是卷 1 的骨架目标（dataloader/render_conversation 未实现时
+  #    它们挂在 NotImplementedError 上）—— 主线推进是同一件事。
+  ["29"]="tests/test_dataloader_resume.py -k 'resume'"
+  ["30"]="tests/test_presets.py -k 'weight_decay or warmdown or lr'"
+  ["31"]="tests/test_optim.py -k 'grouping or adamw_step'"
+  ["32"]="tests/test_engine.py -k 'kvcache or prefill or cache'"
+  ["33"]="tests/test_engine.py -k 'generate or stops or tool'"
+  ["34"]="tests/test_data.py -k 'mask or truncate or alternation'"
+  ["35"]="tests/test_metrics.py -k 'pass_at_k or variance or bpb or multiple_choice'"
+  ["36"]="tests/test_checkpoint.py -k 'save_load or resume or json or find_latest'"
+  ["37"]="tests/test_judging_soundness.py -k 'progress_sh or tutorial_claims or scratch_gating or entry_scripts'"
 )
 
 WANT="${1:-}"

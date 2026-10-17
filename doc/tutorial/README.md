@@ -180,11 +180,11 @@ src/
 ### 卷 3 · nanochat 的架构 trick　✍ 手抄
 | 章 | 标题 | 完成判据指向 |
 |---|---|---|
-| 🚧 16 | **meta device 三步建模型** | `-k meta_device` ★ 有个 NaN 坑 |
-| 🚧 17 | resid_lambdas 与 x0_lambdas | `-k lambdas` |
-| 🚧 18 | Value Embeddings 与门控 | `-k value_embeds` |
-| 🚧 19 | Smear 与 Backout | `-k smear or backout` |
-| 🚧 20 | 滑动窗口注意力 | `-k sliding` |
+| [16](16-meta-device三步建模型.md) | **meta device 三步建模型** | `-k meta_device` ★ 有个 NaN 坑 |
+| [17](17-resid-lambdas与x0-lambdas.md) | resid_lambdas 与 x0_lambdas | `-k lambdas` |
+| [18](18-Value-Embeddings与门控.md) | Value Embeddings 与门控 | `-k value_embeds` |
+| [19](19-Smear与Backout.md) | Smear 与 Backout | `-k smear or backout` |
+| [20](20-滑动窗口注意力.md) | 滑动窗口注意力 | `-k sliding` |
 
 ### 卷 4 · 优化器（最硬核的一卷）　✍ 手抄
 | 章 | 标题 | 完成判据指向 |

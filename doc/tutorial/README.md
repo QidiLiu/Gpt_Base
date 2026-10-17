@@ -189,14 +189,14 @@ src/
 ### 卷 4 · 优化器（最硬核的一卷）　✍ 手抄
 | 章 | 标题 | 完成判据指向 |
 |---|---|---|
-| 🚧 21 | 从 SGD 到 AdamW | `-k adamw_step or adamw_decouples` |
-| 🚧 22 | 为什么矩阵参数适合 Muon | `-k muon_orthogonalization` |
-| 🚧 23 | **手写 Newton-Schulz 正交化** | `-k orthogonalize` ★ 20 行 |
-| 🚧 24 | Polar Express | `-k polar` |
-| 🚧 25 | MuonEq / Muon+ / NorMuon | `-k orthogonalize or muon_plus or nor_muon` |
-| 🚧 26 | 谨慎权重衰减 | `-k cautious` |
-| 🚧 27 | 混合优化器与参数分组 | `-k grouping` |
-| 🚧 28 | torch.compile 融合与 0-D tensor 技巧 | `-k hyperparams` |
+| [21](21-从SGD到AdamW.md) | 从 SGD 到 AdamW | `-k adamw_step or adamw_decouples` |
+| [22](22-为什么矩阵参数适合Muon.md) | 为什么矩阵参数适合 Muon | `-k muon_orthogonalization` |
+| [23](23-手写Newton-Schulz正交化.md) | **手写 Newton-Schulz 正交化** | `-k orthogonalize` ★ 20 行 |
+| [24](24-Polar-Express.md) | Polar Express | `-k polar` |
+| [25](25-MuonEq-Muon+与NorMuon.md) | MuonEq / Muon+ / NorMuon | `-k orthogonalize or muon_plus or nor_muon` |
+| [26](26-谨慎权重衰减.md) | 谨慎权重衰减 | `-k cautious` |
+| [27](27-混合优化器与参数分组.md) | 混合优化器与参数分组 | `-k grouping` |
+| [28](28-torch.compile融合与0-D-tensor技巧.md) | torch.compile 融合与 0-D tensor 技巧 | `-k hyperparams` |
 
 ### 卷 5-8 · 训练循环、分布式、对齐、收尾　📖 只读
 *（第二批交付：代码已在 `src/` 里，是只读的。教程随第二批补上）*

@@ -273,11 +273,11 @@ uv run pytest tests/test_core.py -k softcap -v --collect-only
 
 > ⚠ **两个必须先知道的事实。**
 > ① **判据名要真的跑一次 `--collect-only` 确认选中数 ≥ 1。**
-> softcap 的判据（4 条，含 `test_logit_softcap_smooth_saturation` 等）
-> 属于 solution 分支后来补的测试 —— **main 骨架态下这条命令选中
-> 0 个用例**，而 pytest 对「0 选中」照样显示通过。这就是「空通过」：
-> 看起来绿，其实什么都没验证。`progress.sh` 有自检守判据的可选中，
-> **文档里的命令没有** —— 所以每写一条 `-k` 命令，顺手验一下。
+> softcap 的判据是 solution 分支后来补的（4 条）——
+> **main 骨架态下这条命令选中 0 个用例**，而 pytest 对「0 选中」
+> 照样显示通过。这就是「空通过」：看起来绿，其实什么都没验证。
+> `progress.sh` 有自检守判据的可选中，**文档里的命令没有** ——
+> 所以每写一条 `-k` 命令，顺手验一下。
 > ② 骨架态下判据本来也挂 —— `sdpa_bt`/`forward` 都未就绪。
 >
 > 所以**验证 1 的主体用下面的手工脚本**（纯数学，现在就能跑）；

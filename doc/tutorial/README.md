@@ -93,7 +93,7 @@ uv run pytest tests/ -q
 > FAILED tests/test_data.py::test_every_row_starts_with_bos - NotImplementedError: 待实现：make_dataloader ...
 > ```
 >
-> `git checkout solution` 后再跑会变成 `199 passed, 2 skipped` —— 那才是全绿。
+> `git checkout solution` 后再跑会变成 `243 passed, 2 skipped` —— 那才是全绿。
 > **在 `main` 上看到 0 failed 才说明你走错了分支。**
 
 ---
@@ -167,15 +167,15 @@ src/
 ### 卷 2 · 模型：tensor 怎么变成 logits　✍ 手抄
 | 章 | 标题 | 完成判据指向 |
 |---|---|---|
-| 🚧 07 | 先跑通一个最小 GPT | `-k uniform or loss_reduction or ignore or causal` |
-| 🚧 08 | RMSNorm | `-k rmsnorm` |
-| 🚧 09 | **RoPE 旋转位置编码** | `-k rope` |
-| 🚧 10 | 注意力三步曲 | `-k attend or sliding` |
-| 🚧 11 | SDPA 与 FlashAttention | `-k sdpa` ★ 有个大坑 |
-| 🚧 12 | QK Norm 与 GQA | `-k sdpa or attend` |
-| 🚧 13 | MLP 与激活函数 | `-k mlp_activation` |
-| 🚧 14 | 残差流与 Pre-LN | `-k causal` |
-| 🚧 15 | 权重绑定与 logit softcap | `-k sampling or topk` |
+| [07](07-先跑通一个最小GPT.md) | 先跑通一个最小 GPT | `-k uniform or loss_reduction or ignore or causal` |
+| [08](08-RMSNorm.md) | RMSNorm | `-k rmsnorm` |
+| [09](09-RoPE旋转位置编码.md) | **RoPE 旋转位置编码** | `-k rope` |
+| [10](10-注意力三步曲.md) | 注意力三步曲 | `-k attend or sliding` |
+| [11](11-SDPA与FlashAttention.md) | SDPA 与 FlashAttention | `-k sdpa` ★ 有个大坑 |
+| [12](12-QK-Norm与GQA.md) | QK Norm 与 GQA | `-k sdpa or attend` |
+| [13](13-MLP与激活函数.md) | MLP 与激活函数 | `-k mlp_activation` |
+| [14](14-残差流与Pre-LN.md) | 残差流与 Pre-LN | `-k causal` |
+| [15](15-权重绑定与logit-softcap.md) | 权重绑定与 logit softcap | `-k sampling or topk` |
 
 ### 卷 3 · nanochat 的架构 trick　✍ 手抄
 | 章 | 标题 | 完成判据指向 |
@@ -299,10 +299,11 @@ bash script/chat.sh       smoke   # 交互式聊天
 uv run pytest tests/ -v
 ```
 
-194 个测试：卷0 15 + 卷1 31（21 + 精确续训 10）+ 卷2-3 28 + 卷4 14 + 只读护栏 106
-+ 只读代码护栏 103（metrics 11 + checkpoint 15 + engine 50 + tasks 27）
-另有 11 个判据自检（`tests/test_judging_soundness.py`），
-全量 `pytest tests/` 收集到 192 个。
+194 个测试：卷 0 15（`presets`）+ 卷 1 31（`data` 21 + 精确续训 10）+
+卷 2-3 28（`core`）+ 卷 4 14（`optim`）+ 只读区 106
+（engine 53 + tasks 27 + checkpoint 15 + metrics 11）。
+另有 11 个判据自检（`tests/test_judging_soundness.py`，main 上的版本），
+全量 `pytest tests/` 收集到 **205 = 194 + 11**。
 专门覆盖「看起来对其实错了」的 bug。你在敲的过程中改坏东西，
 测试会立刻告诉你哪里坏了。几个重点：
 

@@ -23,7 +23,7 @@ naive 做法（nanoGPT 的做法）：
 
     本项目的实测（doc/tutorial/05 第「概念：什么时候会真的丢 token」一节）：
         档位                T     裁剪率
-        smoke(d4)         512     ~1%
+        smoke(d4)         512     0.5%
         ablation(d6)     1024     0.1%
         full(d24)        1024     0.1%
     原因是本项目语料的文档中位数只有 628 token（见 dataset.py 开头），

@@ -145,9 +145,10 @@ src/
 
 ## 教程目录
 
-> 🚧 = 教程正文还没写（代码骨架已就位，第二批交付）。
-> **判据测试和 `src/` 里的骨架提示已经可以用了**，所以你可以先敲代码，
-> 教程正文随后补上。（未写的章节不做超链接，避免点进去是死链。）
+> ✓ 全部 37 章正文都已就位（README + 卷 0-8）。
+> 手抄卷（卷 1-4）的 `src/` 骨架在等你的代码，只读卷（卷 5-8）
+> 只要读、不要敲。判据全绿的那一天，就是你能独立把整个项目
+> 从零建起来的那一天。
 
 ### 卷 0 · 准备　📖 只读
 | 章 | 标题 | 核心问题 |
@@ -199,13 +200,28 @@ src/
 | [28](28-torch.compile融合与0-D-tensor技巧.md) | torch.compile 融合与 0-D tensor 技巧 | `-k hyperparams` |
 
 ### 卷 5-8 · 训练循环、分布式、对齐、收尾　📖 只读
-*（第二批交付：代码已在 `src/` 里，是只读的。教程随第二批补上）*
+*（代码已在 `src/` 里，是只读的 —— 卷 5 读 `training/train_base.py`，
+卷 7 读 `inference/engine.py` + `evaluation/metrics.py` +
+`training/{eval_*,chat}`，卷 8 读 `common/checkpoint.py`。
+判据是只读护栏：挂掉 = 代码被改坏。）*
 
-卷 5 训练循环 · 卷 6 分布式 · 卷 7 推理与 SFT · 卷 8 全流程与排错
+| 章 | 标题 | 完成判据指向 |
+|---|---|---|
+| [29](29-训练循环.md) | 训练循环（卷 5） | `-k resume` |
+| [30](30-三条调度曲线.md) | 三条调度曲线（卷 5） | `-k weight_decay or warmdown or lr` |
+| [31](31-分布式.md) | 分布式（卷 6） | `-k grouping or adamw_step` |
+| [32](32-推理引擎与KV-cache.md) | 推理引擎与 KV-cache（卷 7） | `-k kvcache or prefill or cache` |
+| [33](33-生成循环与终止控制.md) | 生成循环与终止控制（卷 7） | `-k generate or stops or tool` |
+| [34](34-对话模板与SFT训练.md) | 对话模板与 SFT 训练（卷 7） | `-k mask or truncate or alternation` |
+| [35](35-评测与指标.md) | 评测与指标（卷 7） | `-k pass_at_k or variance or bpb or multiple_choice` |
+| [36](36-checkpoint与续训.md) | checkpoint 与续训（卷 8） | `-k save_load or resume or json or find_latest` |
+| [37](37-全流程与排错.md) | 全流程与排错（卷 8 收尾） | `-k progress_sh or tutorial_claims or …` |
 
 ---
 
 ## 每章的固定结构
+
+**手抄卷（卷 1-4）：**
 
 ```
 ## 本章目标         学完能回答什么问题
@@ -217,6 +233,18 @@ src/
 ## 常见坑
 ## 延伸            nanochat 完整版怎么做的，差异在哪
 ```
+
+**只读卷（卷 5-8）：** 代码在 `src/` 里已是成品，不敲代码。
+两段替换掉：
+
+```
+## 读这段代码时注意什么   逐行读，指出「哪里容易看错」
+## 动手验证         跑已有判据 + 读代码找陷阱
+```
+
+⚠ 只读卷的风险形态和手抄卷不同：**手抄卷的错误会立刻 assert，
+只读卷的错误往往是静默的**（第 24/25/28 章各踩过一例）。
+所以只读卷练的是「主动验证改动真的生效了」。
 
 **★ 消融实验是本教程的核心。** 每章的「延伸」告诉你 nanochat 怎么做的，
 「消融实验」让你亲手验证它到底值多少。全部做完，你会得到一张表：

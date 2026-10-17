@@ -368,7 +368,7 @@ cfg_dict = {k: v for k, v in meta["model_config"].items() if k in fields}
 
 ### 验证 1：`_json_safe` 和严格解析
 
-> 🔒 **需要先完成**：无 —— test_checkpoint 是只读护栏，main 上就绪。
+> 🔒 **需要先完成**：无 —— tests/test_checkpoint.py 里的护栏是只读护栏，main 上就绪。
 
 见上面「实测」。**关键是 `Infinity` 不是标准 JSON。**
 
